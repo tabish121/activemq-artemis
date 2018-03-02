@@ -713,6 +713,64 @@ public class AMQPMessage extends RefCountMessage {
       buffer.writeBytes(data, messagePaylodStart, data.writerIndex() - messagePaylodStart);
    }
 
+   /**
+    * Gets a ByteBuf from the Message that contains the encoded bytes to be sent on the wire.
+    * <p>
+    * When possible this method will present the bytes to the caller without copying them into
+    * another buffer copy.  If copying is needed a new Netty buffer is created and returned. The
+    * caller should ensure that the reference count on the returned buffer is always decremented
+    * to avoid a leak in the case of a copied buffer being returned.
+    *
+    * @param deliveryCount
+    *       The new delivery count for this message.
+    *
+    * @return a Netty ByteBuf containing the encoded bytes of this Message instance.
+    */
+   public ByteBuf getSendBuffer(int deliveryCount) {
+      checkBuffer();
+
+      int amqpDeliveryCount = deliveryCount - 1;
+
+      ByteBuf result;
+
+      if (amqpDeliveryCount > 0) {
+         // If the re-delivering the message then the header must be re-encoded
+         // (or created if not previously present).  Any delivery annotations should
+         // be skipped as well in the resulting buffer.
+
+         result = PooledByteBufAllocator.DEFAULT.heapBuffer(getEncodeSize());
+
+         Header header = getHeader();
+         if (header == null) {
+            header = new Header();
+            header.setDurable(durable);
+         }
+
+         synchronized (header) {
+            header.setDeliveryCount(UnsignedInteger.valueOf(amqpDeliveryCount));
+            TLSEncode.getEncoder().setByteBuffer(new NettyWritable(result));
+            TLSEncode.getEncoder().writeObject(header);
+            TLSEncode.getEncoder().setByteBuffer((WritableBuffer) null);
+         }
+
+         result.writeBytes(data, messagePaylodStart, data.writerIndex() - messagePaylodStart);
+
+      } else if (headerEnds != messagePaylodStart) {
+         // The original message had delivery annotations and so we must copy into a new
+         // buffer skipping the delivery annotations section as that is not meant to survive
+         // beyond this hop.
+         result = PooledByteBufAllocator.DEFAULT.heapBuffer(getEncodeSize());
+         result.writeBytes(data, 0, headerEnds);
+         result.writeBytes(data, messagePaylodStart, data.writerIndex() - messagePaylodStart);
+      } else {
+         // Common case message has no delivery annotations and this is the first delivery
+         // so no re-encoding or section skipping needed.
+         result = data.retainedDuplicate();
+      }
+
+      return result;
+   }
+
    public TypedProperties createExtraProperties() {
       if (extraProperties == null) {
          extraProperties = new TypedProperties();
