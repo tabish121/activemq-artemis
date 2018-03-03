@@ -665,16 +665,20 @@ public class AMQPMessage extends RefCountMessage {
 
    private synchronized void checkBuffer() {
       if (!bufferValid) {
-         int estimated = Math.max(1500, data != null ? data.capacity() + 1000 : 0);
-         ByteBuf buffer = PooledByteBufAllocator.DEFAULT.heapBuffer(estimated);
-         try {
-            getProtonMessage().encode(new NettyWritable(buffer));
-            byte[] bytes = new byte[buffer.writerIndex()];
-            buffer.readBytes(bytes);
-            this.data = Unpooled.wrappedBuffer(bytes);
-         } finally {
-            buffer.release();
-         }
+         encodeProtonMessage();
+      }
+   }
+
+   private void encodeProtonMessage() {
+      int estimated = Math.max(1500, data != null ? data.capacity() + 1000 : 0);
+      ByteBuf buffer = PooledByteBufAllocator.DEFAULT.heapBuffer(estimated);
+      try {
+         getProtonMessage().encode(new NettyWritable(buffer));
+         byte[] bytes = new byte[buffer.writerIndex()];
+         buffer.readBytes(bytes);
+         this.data = Unpooled.wrappedBuffer(bytes);
+      } finally {
+         buffer.release();
       }
    }
 
@@ -729,45 +733,52 @@ public class AMQPMessage extends RefCountMessage {
    public ByteBuf getSendBuffer(int deliveryCount) {
       checkBuffer();
 
-      int amqpDeliveryCount = deliveryCount - 1;
-
-      ByteBuf result;
-
-      if (amqpDeliveryCount > 0) {
-         // If the re-delivering the message then the header must be re-encoded
-         // (or created if not previously present).  Any delivery annotations should
-         // be skipped as well in the resulting buffer.
-
-         result = PooledByteBufAllocator.DEFAULT.heapBuffer(getEncodeSize());
-
-         Header header = getHeader();
-         if (header == null) {
-            header = new Header();
-            header.setDurable(durable);
-         }
-
-         synchronized (header) {
-            header.setDeliveryCount(UnsignedInteger.valueOf(amqpDeliveryCount));
-            TLSEncode.getEncoder().setByteBuffer(new NettyWritable(result));
-            TLSEncode.getEncoder().writeObject(header);
-            TLSEncode.getEncoder().setByteBuffer((WritableBuffer) null);
-         }
-
-         result.writeBytes(data, messagePaylodStart, data.writerIndex() - messagePaylodStart);
+      if (deliveryCount > 1) {
+         return getRedeliveredSendBuffer(deliveryCount);
 
       } else if (headerEnds != messagePaylodStart) {
-         // The original message had delivery annotations and so we must copy into a new
-         // buffer skipping the delivery annotations section as that is not meant to survive
-         // beyond this hop.
-         result = PooledByteBufAllocator.DEFAULT.heapBuffer(getEncodeSize());
-         result.writeBytes(data, 0, headerEnds);
-         result.writeBytes(data, messagePaylodStart, data.writerIndex() - messagePaylodStart);
+         return getSendBufferWithDeliveryAnnotations();
       } else {
          // Common case message has no delivery annotations and this is the first delivery
          // so no re-encoding or section skipping needed.
-         result = data.retainedDuplicate();
+         return data.retainedDuplicate();
+      }
+   }
+
+   private ByteBuf getSendBufferWithDeliveryAnnotations() {
+      assert headerEnds != messagePaylodStart;
+      // The original message had delivery annotations and so we must copy into a new
+      // buffer skipping the delivery annotations section as that is not meant to survive
+      // beyond this hop.
+      final ByteBuf result = PooledByteBufAllocator.DEFAULT.heapBuffer(getEncodeSize());
+      result.writeBytes(data, 0, headerEnds);
+      result.writeBytes(data, messagePaylodStart, data.writerIndex() - messagePaylodStart);
+      return result;
+   }
+
+   private ByteBuf getRedeliveredSendBuffer(int deliveryCount) {
+      assert deliveryCount > 1;
+      final int amqpDeliveryCount = deliveryCount - 1;
+      // If the re-delivering the message then the header must be re-encoded
+      // (or created if not previously present).  Any delivery annotations should
+      // be skipped as well in the resulting buffer.
+
+      final ByteBuf result = PooledByteBufAllocator.DEFAULT.heapBuffer(getEncodeSize());
+
+      Header header = getHeader();
+      if (header == null) {
+         header = new Header();
+         header.setDurable(durable);
       }
 
+      synchronized (header) {
+         header.setDeliveryCount(UnsignedInteger.valueOf(amqpDeliveryCount));
+         TLSEncode.getEncoder().setByteBuffer(new NettyWritable(result));
+         TLSEncode.getEncoder().writeObject(header);
+         TLSEncode.getEncoder().setByteBuffer((WritableBuffer) null);
+      }
+
+      result.writeBytes(data, messagePaylodStart, data.writerIndex() - messagePaylodStart);
       return result;
    }
 
