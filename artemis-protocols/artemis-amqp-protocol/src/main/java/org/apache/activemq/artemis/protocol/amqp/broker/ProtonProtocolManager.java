@@ -22,6 +22,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executor;
+import java.util.concurrent.Semaphore;
 
 import org.apache.activemq.artemis.api.core.ActiveMQBuffer;
 import org.apache.activemq.artemis.api.core.BaseInterceptor;
@@ -43,9 +44,9 @@ import org.apache.activemq.artemis.spi.core.protocol.ProtocolManagerFactory;
 import org.apache.activemq.artemis.spi.core.protocol.RemotingConnection;
 import org.apache.activemq.artemis.spi.core.remoting.Acceptor;
 import org.apache.activemq.artemis.spi.core.remoting.Connection;
+import org.jboss.logging.Logger;
 
 import io.netty.channel.ChannelPipeline;
-import org.jboss.logging.Logger;
 
 /**
  * A proton protocol manager, basically reads the Proton Input and maps proton resources to ActiveMQ Artemis resources
@@ -77,6 +78,10 @@ public class ProtonProtocolManager extends AbstractProtocolManager<AMQPMessage, 
 
    private Long amqpIdleTimeout;
 
+   private int backPressure = 1024 * 1024;
+
+   /** To be intialized on start() */
+   private Semaphore backPressureSemaphore;
 
    /*
    * used when you want to treat senders as a subscription on an address rather than consuming from the actual queue for
@@ -283,4 +288,31 @@ public class ProtonProtocolManager extends AbstractProtocolManager<AMQPMessage, 
       this.initialRemoteMaxFrameSize = initialRemoteMaxFrameSize;
    }
 
+   @Override
+   public void start() {
+      super.start();
+
+      if (backPressure > 0) {
+         this.backPressureSemaphore = new Semaphore(backPressure);
+      } else {
+         this.backPressureSemaphore = null;
+      }
+   }
+
+   public void pressureIn(int credits) {
+      if (backPressureSemaphore != null) {
+         // In case there's a huge package coming, We will wait for the entire credits to be available
+         try {
+            backPressureSemaphore.acquire(Math.min(credits, backPressure));
+         } catch (InterruptedException e) {
+            logger.warn(e.getMessage(), e);
+         }
+      }
+   }
+
+   public void pressureOut(int credits) {
+      if (backPressureSemaphore != null) {
+         backPressureSemaphore.release(Math.min(credits, backPressure));
+      }
+   }
 }
