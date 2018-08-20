@@ -17,13 +17,14 @@
 package org.apache.activemq.artemis.protocol.amqp.proton;
 
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPException;
+import org.apache.qpid.proton.amqp.transport.DeliveryStateListener;
 import org.apache.qpid.proton.amqp.transport.ErrorCondition;
 import org.apache.qpid.proton.engine.Delivery;
 
 /**
  * An interface to handle deliveries, either messages, acks or transaction calls
  */
-public interface ProtonDeliveryHandler {
+public interface ProtonDeliveryHandler extends DeliveryStateListener {
 
    void onFlow(int currentCredits, boolean drain);
 

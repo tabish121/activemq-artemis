@@ -538,91 +538,17 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
       }
 
       try {
-         Message message = ((MessageReference) delivery.getContext()).getMessage();
-         DeliveryState remoteState = delivery.getRemoteState();
-
-         boolean settleImmediate = true;
-         if (remoteState instanceof Accepted) {
-            // this can happen in the twice ack mode, that is the receiver accepts and settles separately
-            // acking again would show an exception but would have no negative effect but best to handle anyway.
-            if (delivery.isSettled()) {
-               return;
-            }
-            // we have to individual ack as we can't guarantee we will get the delivery updates
-            // (including acks) in order from dealer, a performance hit but a must
-            try {
-               sessionSPI.ack(null, brokerConsumer, message);
-            } catch (Exception e) {
-               log.warn(e.toString(), e);
-               throw ActiveMQAMQPProtocolMessageBundle.BUNDLE.errorAcknowledgingMessage(message.toString(), e.getMessage());
-            }
-         } else if (remoteState instanceof TransactionalState) {
-            // When the message arrives with a TransactionState disposition the ack should
-            // enlist the message into the transaction associated with the given txn ID.
-            TransactionalState txState = (TransactionalState) remoteState;
-            ProtonTransactionImpl tx = (ProtonTransactionImpl) this.sessionSPI.getTransaction(txState.getTxnId(), false);
-
-            if (txState.getOutcome() != null) {
-               settleImmediate = false;
-               Outcome outcome = txState.getOutcome();
-               if (outcome instanceof Accepted) {
-                  if (!delivery.remotelySettled()) {
-                     TransactionalState txAccepted = new TransactionalState();
-                     txAccepted.setOutcome(Accepted.getInstance());
-                     txAccepted.setTxnId(txState.getTxnId());
-                     delivery.disposition(txAccepted);
-                  }
-                  // we have to individual ack as we can't guarantee we will get the delivery
-                  // (including acks) in order from dealer, a performance hit but a must
-                  try {
-                     sessionSPI.ack(tx, brokerConsumer, message);
-                     tx.addDelivery(delivery, this);
-                  } catch (Exception e) {
-                     throw ActiveMQAMQPProtocolMessageBundle.BUNDLE.errorAcknowledgingMessage(message.toString(), e.getMessage());
-                  }
-               }
-            }
-         } else if (remoteState instanceof Released) {
-            try {
-               sessionSPI.cancel(brokerConsumer, message, false);
-            } catch (Exception e) {
-               throw ActiveMQAMQPProtocolMessageBundle.BUNDLE.errorCancellingMessage(message.toString(), e.getMessage());
-            }
-         } else if (remoteState instanceof Rejected) {
-            try {
-               sessionSPI.reject(brokerConsumer, message);
-            } catch (Exception e) {
-               throw ActiveMQAMQPProtocolMessageBundle.BUNDLE.errorCancellingMessage(message.toString(), e.getMessage());
-            }
-         } else if (remoteState instanceof Modified) {
-            try {
-               Modified modification = (Modified) remoteState;
-
-               if (Boolean.TRUE.equals(modification.getUndeliverableHere())) {
-                  message.rejectConsumer(brokerConsumer.sequentialID());
-               }
-
-               if (Boolean.TRUE.equals(modification.getDeliveryFailed())) {
-                  sessionSPI.cancel(brokerConsumer, message, true);
-               } else {
-                  sessionSPI.cancel(brokerConsumer, message, false);
-               }
-            } catch (Exception e) {
-               throw ActiveMQAMQPProtocolMessageBundle.BUNDLE.errorCancellingMessage(message.toString(), e.getMessage());
-            }
-         } else {
-            log.debug("Received null or unknown disposition for delivery update: " + remoteState);
-            return;
+         try {
+            delivery.getRemoteState().updateDeliveryState(this, delivery);
+         } catch (ActiveMQAMQPException e) {
+            throw e;
+         } catch (Exception e) {
+            throw new ActiveMQAMQPInternalErrorException(e.getMessage(), e);
          }
 
          if (!presettle) {
             protonSession.replaceTag(delivery.getTag());
          }
-
-         if (settleImmediate) {
-            delivery.settle();
-         }
-
       } finally {
          sessionSPI.afterIO(IO_CALLBACK_FLUSHER);
       }
@@ -639,6 +565,100 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
       @Override
       public void onError(int errorCode, String errorMessage) {
          connection.flush();
+      }
+   }
+
+   @Override
+   public void handleAccepted(DeliveryState state, Accepted outcome, Delivery delivery) throws Exception {
+      Message message = ((MessageReference) delivery.getContext()).getMessage();
+
+      // this can happen in the twice ack mode, that is the receiver accepts and settles separately
+      // acking again would show an exception but would have no negative effect but best to handle anyway.
+      if (delivery.isSettled()) {
+         return;
+      }
+      // we have to individual ack as we can't guarantee we will get the delivery updates
+      // (including acks) in order from dealer, a performance hit but a must
+      try {
+         sessionSPI.ack(null, brokerConsumer, message);
+         delivery.settle();
+      } catch (Exception e) {
+         log.warn(e.toString(), e);
+         throw ActiveMQAMQPProtocolMessageBundle.BUNDLE.errorAcknowledgingMessage(message.toString(), e.getMessage());
+      }
+   }
+
+   @Override
+   public void handleModified(DeliveryState state, Modified outcome, Delivery delivery) throws Exception {
+      Message message = ((MessageReference) delivery.getContext()).getMessage();
+
+      try {
+         if (Boolean.TRUE.equals(outcome.getUndeliverableHere())) {
+            message.rejectConsumer(brokerConsumer.sequentialID());
+         }
+
+         if (Boolean.TRUE.equals(outcome.getDeliveryFailed())) {
+            sessionSPI.cancel(brokerConsumer, message, true);
+         } else {
+            sessionSPI.cancel(brokerConsumer, message, false);
+         }
+
+         delivery.settle();
+      } catch (Exception e) {
+         throw ActiveMQAMQPProtocolMessageBundle.BUNDLE.errorCancellingMessage(message.toString(), e.getMessage());
+      }
+   }
+
+   @Override
+   public void handleRejected(DeliveryState state, Rejected outcome, Delivery delivery) throws Exception {
+      Message message = ((MessageReference) delivery.getContext()).getMessage();
+      try {
+         sessionSPI.reject(brokerConsumer, message);
+         delivery.settle();
+      } catch (Exception e) {
+         throw ActiveMQAMQPProtocolMessageBundle.BUNDLE.errorCancellingMessage(message.toString(), e.getMessage());
+      }
+   }
+
+   @Override
+   public void handleReleased(DeliveryState state, Released outcome, Delivery delivery) throws Exception {
+      Message message = ((MessageReference) delivery.getContext()).getMessage();
+
+      try {
+         sessionSPI.cancel(brokerConsumer, message, false);
+         delivery.settle();
+      } catch (Exception e) {
+         throw ActiveMQAMQPProtocolMessageBundle.BUNDLE.errorCancellingMessage(message.toString(), e.getMessage());
+      }
+   }
+
+   @Override
+   public void handleTransactional(TransactionalState txState, Outcome outcome, Delivery delivery) throws Exception {
+      Message message = ((MessageReference) delivery.getContext()).getMessage();
+
+      // When the message arrives with a TransactionState disposition the ack should
+      // enlist the message into the transaction associated with the given txn ID.
+      ProtonTransactionImpl tx = (ProtonTransactionImpl) this.sessionSPI.getTransaction(txState.getTxnId(), false);
+
+      if (txState.getOutcome() != null) {
+         if (outcome instanceof Accepted) {
+            if (!delivery.remotelySettled()) {
+               TransactionalState txAccepted = new TransactionalState();
+               txAccepted.setOutcome(Accepted.getInstance());
+               txAccepted.setTxnId(txState.getTxnId());
+               delivery.disposition(txAccepted);
+            }
+            // we have to individual ack as we can't guarantee we will get the delivery
+            // (including acks) in order from dealer, a performance hit but a must
+            try {
+               sessionSPI.ack(tx, brokerConsumer, message);
+               tx.addDelivery(delivery, this);
+            } catch (Exception e) {
+               throw ActiveMQAMQPProtocolMessageBundle.BUNDLE.errorAcknowledgingMessage(message.toString(), e.getMessage());
+            }
+         }
+      } else {
+         delivery.settle();
       }
    }
 
