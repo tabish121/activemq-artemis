@@ -28,7 +28,6 @@ import org.apache.activemq.artemis.api.core.Message;
 import org.apache.activemq.artemis.api.core.RoutingType;
 import org.apache.activemq.artemis.api.core.SimpleString;
 import org.apache.activemq.artemis.core.io.IOCallback;
-import org.apache.activemq.artemis.core.persistence.OperationContext;
 import org.apache.activemq.artemis.core.server.AddressQueryResult;
 import org.apache.activemq.artemis.core.server.Consumer;
 import org.apache.activemq.artemis.core.server.MessageReference;
@@ -101,6 +100,7 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
    private boolean shared = false;
    private boolean global = false;
    private boolean isVolatile = false;
+   private boolean presettle;
    private SimpleString tempQueueName;
 
    public ProtonServerSenderContext(AMQPConnectionContext connection,
@@ -417,6 +417,9 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
          }
       }
 
+      // Detect if sender is in pre-settle mode.
+      presettle = sender.getRemoteSenderSettleMode() == SenderSettleMode.SETTLED;
+
       // We need to update the source with any filters we support otherwise the client
       // is free to consider the attach as having failed if we don't send back what we
       // do support or if we send something we don't support the client won't know we
@@ -534,21 +537,9 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
          return;
       }
 
-      OperationContext oldContext = sessionSPI.recoverContext();
-
       try {
          Message message = ((MessageReference) delivery.getContext()).getMessage();
-
-         boolean preSettle = sender.getRemoteSenderSettleMode() == SenderSettleMode.SETTLED;
-
-         DeliveryState remoteState;
-
-         connection.lock();
-         try {
-            remoteState = delivery.getRemoteState();
-         } finally {
-            connection.unlock();
-         }
+         DeliveryState remoteState = delivery.getRemoteState();
 
          boolean settleImmediate = true;
          if (remoteState instanceof Accepted) {
@@ -558,8 +549,7 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
                return;
             }
             // we have to individual ack as we can't guarantee we will get the delivery updates
-            // (including acks) in order
-            // from dealer, a perf hit but a must
+            // (including acks) in order from dealer, a performance hit but a must
             try {
                sessionSPI.ack(null, brokerConsumer, message);
             } catch (Exception e) {
@@ -580,16 +570,10 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
                      TransactionalState txAccepted = new TransactionalState();
                      txAccepted.setOutcome(Accepted.getInstance());
                      txAccepted.setTxnId(txState.getTxnId());
-                     connection.lock();
-                     try {
-                        delivery.disposition(txAccepted);
-                     } finally {
-                        connection.unlock();
-                     }
+                     delivery.disposition(txAccepted);
                   }
                   // we have to individual ack as we can't guarantee we will get the delivery
-                  // updates (including acks) in order
-                  // from dealer, a perf hit but a must
+                  // (including acks) in order from dealer, a performance hit but a must
                   try {
                      sessionSPI.ack(tx, brokerConsumer, message);
                      tx.addDelivery(delivery, this);
@@ -631,28 +615,30 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
             return;
          }
 
-         if (!preSettle) {
+         if (!presettle) {
             protonSession.replaceTag(delivery.getTag());
          }
 
          if (settleImmediate) {
-            settle(delivery);
+            delivery.settle();
          }
 
       } finally {
-         sessionSPI.afterIO(new IOCallback() {
-            @Override
-            public void done() {
-               connection.flush();
-            }
+         sessionSPI.afterIO(IO_CALLBACK_FLUSHER);
+      }
+   }
 
-            @Override
-            public void onError(int errorCode, String errorMessage) {
-               connection.flush();
-            }
-         });
+   private final IOCallbackFlusher IO_CALLBACK_FLUSHER = new IOCallbackFlusher();
 
-         sessionSPI.resetContext(oldContext);
+   private final class IOCallbackFlusher implements IOCallback {
+      @Override
+      public void done() {
+         connection.flush();
+      }
+
+      @Override
+      public void onError(int errorCode, String errorMessage) {
+         connection.flush();
       }
    }
 
@@ -681,30 +667,18 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
       AMQPMessage message = CoreAmqpConverter.checkAMQP(messageReference.getMessage());
       sessionSPI.invokeOutgoing(message, (ActiveMQProtonRemotingConnection) transportConnection.getProtocolConnection());
 
-      // presettle means we can settle the message on the dealer side before we send it, i.e.
-      // for browsers
-      boolean preSettle = sender.getRemoteSenderSettleMode() == SenderSettleMode.SETTLED;
-
       // we only need a tag if we are going to settle later
-      byte[] tag = preSettle ? new byte[0] : protonSession.getTag();
+      byte[] tag = presettle ? new byte[0] : protonSession.getTag();
 
       // Let the Message decide how to present the message bytes
-      boolean attemptRelease = true;
       ReadableBuffer sendBuffer = message.getSendBuffer(deliveryCount);
+      boolean releaseRequired = sendBuffer instanceof NettyReadable;
 
       try {
          int size = sendBuffer.remaining();
 
-         while (!connection.tryLock(1, TimeUnit.SECONDS)) {
-            if (closed || sender.getLocalState() == EndpointState.CLOSED) {
-               // If we're waiting on the connection lock, the link might be in the process of closing.  If this happens
-               // we return.
-               return 0;
-            } else {
-               if (log.isDebugEnabled()) {
-                  log.debug("Couldn't get lock on deliverMessage " + this);
-               }
-            }
+         if (!lockForDelivery()) {
+            return 0;  // Connection has closed.
          }
 
          try {
@@ -713,24 +687,24 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
             delivery.setMessageFormat((int) message.getMessageFormat());
             delivery.setContext(messageReference);
 
-            if (sendBuffer instanceof NettyReadable) {
+            if (releaseRequired) {
                sender.send(sendBuffer);
                // Above send copied, so release now if needed
-               attemptRelease = false;
+               releaseRequired = false;
                ((NettyReadable) sendBuffer).getByteBuf().release();
             } else {
                // Don't have pooled content, no need to release or copy.
-               attemptRelease = false;
                sender.sendNoCopy(sendBuffer);
             }
 
-            if (preSettle) {
+            if (presettle) {
                // Presettled means the client implicitly accepts any delivery we send it.
                sessionSPI.ack(null, brokerConsumer, messageReference.getMessage());
                delivery.settle();
             } else {
                sender.advance();
             }
+
             connection.flush();
          } finally {
             connection.unlock();
@@ -738,7 +712,7 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
 
          return size;
       } finally {
-         if (attemptRelease && sendBuffer instanceof NettyReadable) {
+         if (releaseRequired) {
             ((NettyReadable) sendBuffer).getByteBuf().release();
          }
       }
@@ -809,5 +783,49 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
       }
 
       connection.flush();
+   }
+
+   private static final int SPIN_COUNT = 10;
+   private static final int YIELD_COUNT = 50;
+
+   private boolean lockForDelivery() throws InterruptedException {
+      try {
+         int idleCount = 0;
+
+         if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedException();
+         }
+
+         while (!connection.tryLock()) {
+            if (closed || sender.getLocalState() == EndpointState.CLOSED) {
+               // If we're waiting on the connection lock, the link might be in
+               // the process of closing. If this happens
+               // we return.
+               return false;
+            }
+
+            if (log.isDebugEnabled()) {
+               log.debug("Couldn't get lock on deliverMessage " + this);
+            }
+
+            if (idleCount < SPIN_COUNT) {
+               idleCount++;
+            } else if (idleCount < YIELD_COUNT) {
+               Thread.yield();
+               idleCount++;
+            } else {
+               // If this one fails we will loop as before on 1 second try intervals
+               // until either we get the lock or the sender is closed.
+               if (connection.tryLock(1, TimeUnit.SECONDS)) {
+                  return true;
+               }
+            }
+         }
+
+         return true;
+      } catch (InterruptedException e) {
+         Thread.interrupted();
+         throw e;
+      }
    }
 }

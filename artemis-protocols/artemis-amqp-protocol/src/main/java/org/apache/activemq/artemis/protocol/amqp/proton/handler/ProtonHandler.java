@@ -168,11 +168,14 @@ public class ProtonHandler extends ProtonInitializable implements SaslListener {
       lock.unlock();
    }
 
+   public boolean tryLock() {
+      return lock.tryLock();
+   }
+
    public boolean tryLock(long time, TimeUnit timeUnit) {
       try {
          return lock.tryLock(time, timeUnit);
       } catch (InterruptedException e) {
-
          Thread.currentThread().interrupt();
          return false;
       }
@@ -235,50 +238,94 @@ public class ProtonHandler extends ProtonInitializable implements SaslListener {
       return saslResult;
    }
 
+   public void inputBuffers(List<ByteBuf> buffers) {
+      dataReceived = true;
+      lock.lock();
+      try {
+         buffers.forEach(this::processInputBuffer);
+      } finally {
+         lock.unlock();
+      }
+   }
+
+   public boolean tryInputBuffers(List<ByteBuf> buffers) {
+      dataReceived = true;
+      final boolean locked = lock.tryLock();
+      if (!locked) {
+         return false;
+      }
+      try {
+         buffers.forEach(this::processInputBuffer);
+         return true;
+      } finally {
+         lock.unlock();
+      }
+   }
+
+   private void processInputBuffer(ByteBuf buffer) {
+      while (buffer.readableBytes() > 0) {
+         int capacity = transport.capacity();
+
+         if (!receivedFirstPacket) {
+            handleFirstPacket(buffer);
+            // there is a chance that if SASL Handshake has been carried out that the capacity may change.
+            capacity = transport.capacity();
+         }
+
+         if (capacity > 0) {
+            ByteBuffer tail = transport.tail();
+            int min = Math.min(capacity, buffer.readableBytes());
+            tail.limit(min);
+            buffer.readBytes(tail);
+
+            flush();
+         } else {
+            if (capacity == 0) {
+               log.debugf("abandoning: readableBytes=%d", buffer.readableBytes());
+            } else {
+               log.debugf("transport closed, discarding: readableBytes=%d, capacity=%d", buffer.readableBytes(), transport.capacity());
+            }
+            break;
+         }
+      }
+   }
+
+   private void handleFirstPacket(ByteBuf buffer) {
+      try {
+         byte auth = buffer.getByte(4);
+         if (auth == SASL || auth == BARE) {
+            if (isServer) {
+               dispatchAuth(auth == SASL);
+            } else if (auth == BARE && clientSASLMechanism == null) {
+               dispatchAuthSuccess();
+            }
+         }
+      } catch (Throwable e) {
+         log.warn(e.getMessage(), e);
+      }
+
+      receivedFirstPacket = true;
+   }
+
+   public boolean tryInputBuffer(ByteBuf buffer) {
+      dataReceived = true;
+      final boolean locked = lock.tryLock();
+      if (!locked) {
+         return false;
+      }
+      try {
+         processInputBuffer(buffer);
+         return true;
+      } finally {
+         lock.unlock();
+      }
+   }
+
    public void inputBuffer(ByteBuf buffer) {
       dataReceived = true;
       lock.lock();
       try {
-         while (buffer.readableBytes() > 0) {
-            int capacity = transport.capacity();
-
-            if (!receivedFirstPacket) {
-               try {
-                  byte auth = buffer.getByte(4);
-                  if (auth == SASL || auth == BARE) {
-                     if (isServer) {
-                        dispatchAuth(auth == SASL);
-                     } else if (auth == BARE && clientSASLMechanism == null) {
-                        dispatchAuthSuccess();
-                     }
-                     /*
-                     * there is a chance that if SASL Handshake has been carried out that the capacity may change.
-                     * */
-                     capacity = transport.capacity();
-                  }
-               } catch (Throwable e) {
-                  log.warn(e.getMessage(), e);
-               }
-
-               receivedFirstPacket = true;
-            }
-
-            if (capacity > 0) {
-               ByteBuffer tail = transport.tail();
-               int min = Math.min(capacity, buffer.readableBytes());
-               tail.limit(min);
-               buffer.readBytes(tail);
-
-               flush();
-            } else {
-               if (capacity == 0) {
-                  log.debugf("abandoning: readableBytes=%d", buffer.readableBytes());
-               } else {
-                  log.debugf("transport closed, discarding: readableBytes=%d, capacity=%d", buffer.readableBytes(), transport.capacity());
-               }
-               break;
-            }
-         }
+         processInputBuffer(buffer);
       } finally {
          lock.unlock();
       }

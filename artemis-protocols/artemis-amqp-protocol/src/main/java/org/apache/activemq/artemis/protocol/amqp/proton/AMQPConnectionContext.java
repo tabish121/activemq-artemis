@@ -23,8 +23,10 @@ import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.PORT;
 import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.SCHEME;
 
 import java.net.URI;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -60,6 +62,8 @@ import org.apache.qpid.proton.engine.Transport;
 import org.jboss.logging.Logger;
 
 import io.netty.buffer.ByteBuf;
+import io.netty.channel.EventLoop;
+import io.netty.util.concurrent.ScheduledFuture;
 
 public class AMQPConnectionContext extends ProtonInitializable implements EventHandler {
 
@@ -150,12 +154,91 @@ public class AMQPConnectionContext extends ProtonInitializable implements EventH
       return handler.getSASLResult();
    }
 
+   private final int DEFAULT_INPUT_BACKLOG_MAX = 1024 * 1024;
+
+   private final List<ByteBuf> inputBuffers = new ArrayList<>();
+   private long inputBacklog;
+   private ScheduledFuture<?> processBacklogOfInputBuffers = null;
+
    public void inputBuffer(ByteBuf buffer) {
       if (log.isTraceEnabled()) {
          ByteUtil.debugFrame(log, "Buffer Received ", buffer);
       }
 
-      handler.inputBuffer(buffer);
+      final EventLoop eventLoop = connectionCallback.getRemoteConnection().eventLoop();
+      if (eventLoop == null) {
+         if (inputBuffers.isEmpty()) {
+            handler.inputBuffer(buffer);
+         } else {
+            inputBuffers.add(buffer.retain());
+            inputBacklog += buffer.readableBytes();
+            try {
+               handler.inputBuffers(inputBuffers);
+            } finally {
+               inputBuffers.forEach(ByteBuf::release);
+               inputBuffers.clear();
+               inputBacklog = 0;
+            }
+         }
+      } else {
+         if (inputBuffers.isEmpty()) {
+            if (handler.tryInputBuffer(buffer)) {
+               if (processBacklogOfInputBuffers != null) {
+                  processBacklogOfInputBuffers.cancel(false);
+                  processBacklogOfInputBuffers = null;
+               }
+               return;
+            }
+            inputBuffers.add(buffer.retain());
+            inputBacklog += buffer.readableBytes();
+         } else {
+            inputBuffers.add(buffer.retain());
+            inputBacklog += buffer.readableBytes();
+            if (handler.tryInputBuffers(inputBuffers)) {
+               inputBuffers.forEach(ByteBuf::release);
+               inputBuffers.clear();
+               inputBacklog = 0;
+               if (processBacklogOfInputBuffers != null) {
+                  processBacklogOfInputBuffers.cancel(false);
+                  processBacklogOfInputBuffers = null;
+               }
+               if (!connectionCallback.getRemoteConnection().isAutoRead()) {
+                  log.error("Resuming normal auto read after backlog cleared");
+                  connectionCallback.getRemoteConnection().setAutoRead(true);
+               }
+               return;
+            }
+         }
+
+         if (inputBacklog > DEFAULT_INPUT_BACKLOG_MAX) {
+            // We don't want any more reads until we clear the backlog
+            log.error("Disabling auto read after backlog exceeded maximum configured amount.");
+            connectionCallback.getRemoteConnection().setAutoRead(false);
+         }
+
+         // there is some work left but we are being back-pressured by who is owning the lock:
+         // let's try later without retries if there isn't another scheduled process
+         if (processBacklogOfInputBuffers == null) {
+            processBacklogOfInputBuffers = eventLoop.schedule(this::processBacklogOfInputBuffers, 100, TimeUnit.MICROSECONDS);
+         }
+      }
+   }
+
+   private void processBacklogOfInputBuffers() {
+      if (!inputBuffers.isEmpty()) {
+         try {
+            handler.inputBuffers(inputBuffers);
+         } finally {
+            inputBuffers.forEach(ByteBuf::release);
+            inputBuffers.clear();
+            inputBacklog = 0;
+            processBacklogOfInputBuffers = null;
+            if (!connectionCallback.getRemoteConnection().isAutoRead()) {
+               log.error("Resuming normal auto read after backlog cleared");
+               connectionCallback.getRemoteConnection().setAutoRead(true);
+            }
+         }
+      }
    }
 
    public void destroy() {
@@ -168,6 +251,10 @@ public class AMQPConnectionContext extends ProtonInitializable implements EventH
 
    public boolean tryLock(long time, TimeUnit timeUnit) {
       return handler.tryLock(time, timeUnit);
+   }
+
+   public boolean tryLock() {
+      return handler.tryLock();
    }
 
    public void lock() {

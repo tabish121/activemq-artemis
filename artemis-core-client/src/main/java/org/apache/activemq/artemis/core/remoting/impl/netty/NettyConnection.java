@@ -24,12 +24,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.LockSupport;
 
-import io.netty.buffer.ByteBuf;
-import io.netty.channel.Channel;
-import io.netty.channel.ChannelFuture;
-import io.netty.channel.ChannelFutureListener;
-import io.netty.channel.ChannelPromise;
-import io.netty.channel.EventLoop;
 import org.apache.activemq.artemis.api.core.ActiveMQBuffer;
 import org.apache.activemq.artemis.api.core.ActiveMQInterruptedException;
 import org.apache.activemq.artemis.api.core.TransportConfiguration;
@@ -43,6 +37,13 @@ import org.apache.activemq.artemis.spi.core.remoting.ReadyListener;
 import org.apache.activemq.artemis.utils.Env;
 import org.apache.activemq.artemis.utils.IPV6Util;
 import org.jboss.logging.Logger;
+
+import io.netty.buffer.ByteBuf;
+import io.netty.channel.Channel;
+import io.netty.channel.ChannelFuture;
+import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.ChannelPromise;
+import io.netty.channel.EventLoop;
 
 public class NettyConnection implements Connection {
 
@@ -98,6 +99,11 @@ public class NettyConnection implements Connection {
       this.batchLimit = batchingEnabled ? Math.min(this.writeBufferHighWaterMark, DEFAULT_BATCH_BYTES) : 0;
    }
 
+   @Override
+   public EventLoop eventLoop() {
+      return channel.eventLoop();
+   }
+
    private static void waitFor(ChannelPromise promise, long millis) {
       try {
          final boolean completed = promise.await(millis);
@@ -148,6 +154,11 @@ public class NettyConnection implements Connection {
    @Override
    public final void setAutoRead(boolean autoRead) {
       channel.config().setAutoRead(autoRead);
+   }
+
+   @Override
+   public final boolean isAutoRead() {
+      return channel.config().isAutoRead();
    }
 
    @Override

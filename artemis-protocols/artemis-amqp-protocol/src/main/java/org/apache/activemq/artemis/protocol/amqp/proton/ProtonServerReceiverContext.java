@@ -267,13 +267,9 @@ public class ProtonServerReceiverContext extends ProtonInitializable implements 
 
          condition.setDescription(e.getMessage());
          rejected.setError(condition);
-         connection.lock();
-         try {
-            delivery.disposition(rejected);
-            delivery.settle();
-         } finally {
-            connection.unlock();
-         }
+
+         delivery.disposition(rejected);
+         delivery.settle();
       }
    }
 
@@ -301,12 +297,7 @@ public class ProtonServerReceiverContext extends ProtonInitializable implements 
       if (sessionSPI != null) {
          sessionSPI.offerProducerCredit(address, credits, threshold, receiver);
       } else {
-         connection.lock();
-         try {
-            receiver.flow(credits);
-         } finally {
-            connection.unlock();
-         }
+         receiver.flow(credits);
          connection.flush();
       }
    }
