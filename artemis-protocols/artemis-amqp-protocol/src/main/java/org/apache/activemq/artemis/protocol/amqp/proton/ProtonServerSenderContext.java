@@ -805,18 +805,15 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
       connection.flush();
    }
 
-   private static final int SPIN_COUNT = 10;
-   private static final int YIELD_COUNT = 50;
-
    private boolean lockForDelivery() throws InterruptedException {
       try {
-         int idleCount = 0;
-
          if (Thread.currentThread().isInterrupted()) {
             throw new InterruptedException();
          }
 
-         while (!connection.tryLock()) {
+         // If this fails we will loop on 1 second try intervals
+         // until either we get the lock or the sender is closed.
+         while (!connection.tryLock(1, TimeUnit.SECONDS)) {
             if (closed || sender.getLocalState() == EndpointState.CLOSED) {
                // If we're waiting on the connection lock, the link might be in
                // the process of closing. If this happens
@@ -826,19 +823,6 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
 
             if (log.isDebugEnabled()) {
                log.debug("Couldn't get lock on deliverMessage " + this);
-            }
-
-            if (idleCount < SPIN_COUNT) {
-               idleCount++;
-            } else if (idleCount < YIELD_COUNT) {
-               Thread.yield();
-               idleCount++;
-            } else {
-               // If this one fails we will loop as before on 1 second try intervals
-               // until either we get the lock or the sender is closed.
-               if (connection.tryLock(1, TimeUnit.SECONDS)) {
-                  return true;
-               }
             }
          }
 
