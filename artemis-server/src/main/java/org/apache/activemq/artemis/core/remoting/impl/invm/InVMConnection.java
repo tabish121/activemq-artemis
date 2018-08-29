@@ -23,7 +23,6 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
-import io.netty.channel.ChannelFutureListener;
 import org.apache.activemq.artemis.api.core.ActiveMQBuffer;
 import org.apache.activemq.artemis.api.core.ActiveMQBuffers;
 import org.apache.activemq.artemis.api.core.ActiveMQInterruptedException;
@@ -37,6 +36,8 @@ import org.apache.activemq.artemis.spi.core.remoting.Connection;
 import org.apache.activemq.artemis.spi.core.remoting.ReadyListener;
 import org.apache.activemq.artemis.utils.UUIDGenerator;
 import org.jboss.logging.Logger;
+
+import io.netty.channel.ChannelFutureListener;
 
 public class InVMConnection implements Connection {
 
@@ -148,6 +149,11 @@ public class InVMConnection implements Connection {
    public void setAutoRead(boolean autoRead) {
       // nothing to be done on the INVM.
       // maybe we could eventually implement something, but not needed now
+   }
+
+   @Override
+   public boolean isAutoRead() {
+      return true;  // Cannot currently disable on InVM
    }
 
    @Override

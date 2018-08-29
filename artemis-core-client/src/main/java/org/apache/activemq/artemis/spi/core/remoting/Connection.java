@@ -18,16 +18,22 @@ package org.apache.activemq.artemis.spi.core.remoting;
 
 import java.util.concurrent.TimeUnit;
 
-import io.netty.channel.ChannelFutureListener;
 import org.apache.activemq.artemis.api.core.ActiveMQBuffer;
 import org.apache.activemq.artemis.api.core.TransportConfiguration;
 import org.apache.activemq.artemis.core.security.ActiveMQPrincipal;
 import org.apache.activemq.artemis.spi.core.protocol.RemotingConnection;
 
+import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.EventLoop;
+
 /**
  * The connection used by a channel to write data to.
  */
 public interface Connection {
+
+   default EventLoop eventLoop() {
+      return null;
+   }
 
    /**
     * Create a new ActiveMQBuffer of the given size.
@@ -66,6 +72,11 @@ public interface Connection {
     * This is basically the same as blocking the reading.
     */
    void setAutoRead(boolean autoRead);
+
+   /**
+    * @return true if the Channel auto read functionality has been disabled.
+    */
+   boolean isAutoRead();
 
    /**
     * returns the unique id of this wire.

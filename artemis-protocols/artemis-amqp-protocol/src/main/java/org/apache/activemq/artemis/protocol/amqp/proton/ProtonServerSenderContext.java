@@ -681,16 +681,8 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
       try {
          int size = sendBuffer.remaining();
 
-         while (!connection.tryLock(1, TimeUnit.SECONDS)) {
-            if (closed || sender.getLocalState() == EndpointState.CLOSED) {
-               // If we're waiting on the connection lock, the link might be in the process of closing.  If this happens
-               // we return.
-               return 0;
-            } else {
-               if (log.isDebugEnabled()) {
-                  log.debug("Couldn't get lock on deliverMessage " + this);
-               }
-            }
+         if (!lockForDelivery()) {
+            return 0;  // Connection has closed.
          }
 
          try {
@@ -795,5 +787,49 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
       }
 
       connection.flush();
+   }
+
+   private static final int SPIN_COUNT = 10;
+   private static final int YIELD_COUNT = 70;
+
+   private boolean lockForDelivery() throws InterruptedException {
+      try {
+         int idleCount = 0;
+
+         if (Thread.currentThread().isInterrupted()) {
+            throw new InterruptedException();
+         }
+
+         while (!connection.tryLock()) {
+            if (closed || sender.getLocalState() == EndpointState.CLOSED) {
+               // If we're waiting on the connection lock, the link might be in
+               // the process of closing. If this happens
+               // we return.
+               return false;
+            }
+
+            if (log.isDebugEnabled()) {
+               log.debug("Couldn't get lock on deliverMessage " + this);
+            }
+
+            if (idleCount < SPIN_COUNT) {
+               idleCount++;
+            } else if (idleCount < YIELD_COUNT) {
+               Thread.yield();
+               idleCount++;
+            } else {
+               // If this one fails we will loop as before on 1 second try intervals
+               // until either we get the lock or the sender is closed.
+               if (connection.tryLock(1, TimeUnit.SECONDS)) {
+                  return true;
+               }
+            }
+         }
+
+         return true;
+      } catch (InterruptedException e) {
+         Thread.interrupted();
+         throw e;
+      }
    }
 }
