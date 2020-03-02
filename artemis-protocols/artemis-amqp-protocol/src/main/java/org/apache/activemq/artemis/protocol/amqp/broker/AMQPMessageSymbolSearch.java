@@ -16,6 +16,8 @@
  */
 package org.apache.activemq.artemis.protocol.amqp.broker;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.IdentityHashMap;
@@ -34,6 +36,10 @@ import org.apache.qpid.proton.amqp.messaging.Properties;
 import org.apache.qpid.proton.codec.DecoderImpl;
 import org.apache.qpid.proton.codec.ReadableBuffer;
 import org.apache.qpid.proton.codec.TypeConstructor;
+import org.apache.qpid.proton4j.buffer.ProtonBuffer;
+import org.apache.qpid.proton4j.codec.Decoder;
+import org.apache.qpid.proton4j.codec.DecoderState;
+import org.apache.qpid.proton4j.codec.TypeDecoder;
 
 final class AMQPMessageSymbolSearch {
 
@@ -84,4 +90,35 @@ final class AMQPMessageSymbolSearch {
       }
    }
 
+   public static boolean anyMessageAnnotations(Decoder decoder, ProtonBuffer data, KMPNeedle[] needles) {
+      final int position = data.getReadIndex();
+      final DecoderState state = TLSEncode.getDecoderState();
+
+      try {
+         while (data.isReadable()) {
+            TypeDecoder<?> constructor = decoder.readNextTypeDecoder(data, state);
+            final Class<?> typeClass = constructor.getTypeClass();
+            if (MSG_BODY_TYPES.containsKey(typeClass)) {
+               if (MessageAnnotations.class.equals(typeClass)) {
+                  final int start = data.getReadIndex();
+                  constructor.skipValue(data, state);
+                  final int end = data.getReadIndex();
+                  for (int i = 0, count = needles.length; i < count; i++) {
+                     final int foundIndex = needles[i].searchInto(ProtonBuffer::getByte, data, end, start);
+                     if (foundIndex != -1) {
+                        return true;
+                     }
+                  }
+               }
+               return false;
+            }
+            constructor.skipValue(data, state);
+         }
+         return false;
+      } catch (IOException ex) {
+         throw new UncheckedIOException(ex);
+      } finally {
+         data.setReadIndex(position);
+      }
+   }
 }

@@ -17,6 +17,8 @@
 
 package org.apache.activemq.artemis.protocol.amqp.broker;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.ByteBuffer;
 
 import org.apache.activemq.artemis.api.core.ActiveMQBuffer;
@@ -34,10 +36,12 @@ import org.apache.activemq.artemis.core.server.ActiveMQServerLogger;
 import org.apache.activemq.artemis.core.server.LargeServerMessage;
 import org.apache.activemq.artemis.protocol.amqp.util.TLSEncode;
 import org.apache.activemq.artemis.utils.collections.TypedProperties;
-import org.apache.qpid.proton.amqp.messaging.Header;
-import org.apache.qpid.proton.codec.DecoderImpl;
 import org.apache.qpid.proton.codec.ReadableBuffer;
-import org.apache.qpid.proton.codec.TypeConstructor;
+import org.apache.qpid.proton4j.amqp.messaging.Header;
+import org.apache.qpid.proton4j.buffer.ProtonBuffer;
+import org.apache.qpid.proton4j.buffer.ProtonByteBufferAllocator;
+import org.apache.qpid.proton4j.codec.DecoderState;
+import org.apache.qpid.proton4j.codec.TypeDecoder;
 
 public class AMQPLargeMessage extends AMQPMessage implements LargeServerMessage {
 
@@ -81,7 +85,7 @@ public class AMQPLargeMessage extends AMQPMessage implements LargeServerMessage 
     */
    private Boolean fileDurable;
 
-   private volatile AmqpReadableBuffer parsingData;
+   private volatile ProtonBuffer parsingData;
 
    private final StorageManager storageManager;
 
@@ -110,12 +114,11 @@ public class AMQPLargeMessage extends AMQPMessage implements LargeServerMessage 
    }
 
    public void openLargeMessage() throws Exception {
-      this.parsingData = new AmqpReadableBuffer(largeBody.map());
+      this.parsingData = ProtonByteBufferAllocator.DEFAULT.wrap(largeBody.map());
    }
 
    public void closeLargeMessage() throws Exception {
       largeBody.releaseResources(false);
-      parsingData.freeDirectBuffer();
       parsingData = null;
    }
 
@@ -124,7 +127,7 @@ public class AMQPLargeMessage extends AMQPMessage implements LargeServerMessage 
       openLargeMessage();
       try {
          this.ensureMessageDataScanned();
-         parsingData.rewind();
+         parsingData.setReadIndex(0);
          lazyDecodeApplicationProperties();
       } finally {
          closeLargeMessage();
@@ -150,7 +153,7 @@ public class AMQPLargeMessage extends AMQPMessage implements LargeServerMessage 
    }
 
    @Override
-   public ReadableBuffer getData() {
+   public ProtonBuffer getData() {
       if (parsingData == null) {
          throw new RuntimeException("AMQP Large Message is not open");
       }
@@ -159,21 +162,21 @@ public class AMQPLargeMessage extends AMQPMessage implements LargeServerMessage 
    }
 
    protected void parseHeader(ReadableBuffer buffer) {
-
-      DecoderImpl decoder = TLSEncode.getDecoder();
-      decoder.setBuffer(buffer);
+      final ProtonBuffer view = ProtonByteBufferAllocator.DEFAULT.wrap(buffer.byteBuffer());
+      final DecoderState state = TLSEncode.getDecoderState();
 
       try {
-         int constructorPos = buffer.position();
-         TypeConstructor<?> constructor = decoder.readConstructor();
+         TypeDecoder<?> constructor = DEFAULT_DECODER.readNextTypeDecoder(view, state);
          if (Header.class.equals(constructor.getTypeClass())) {
-            header = (Header) constructor.readValue();
-            if (header.getTtl() != null) {
-               expiration = System.currentTimeMillis() + header.getTtl().intValue();
+            header = (Header) constructor.readValue(view, state);
+            if (header.hasTimeToLive()) {
+               expiration = System.currentTimeMillis() + header.getTimeToLive();
             }
          }
+      } catch (IOException ex) {
+         throw new UncheckedIOException(ex);
       } finally {
-         decoder.setBuffer(null);
+         state.reset();
          buffer.rewind();
       }
    }
@@ -199,7 +202,7 @@ public class AMQPLargeMessage extends AMQPMessage implements LargeServerMessage 
 
    @Override
    public ReadableBuffer getSendBuffer(int deliveryCount) {
-      return getData().rewind();
+      return new ReadableBuffer.ByteBufferReader(getData().toByteBuffer());
    }
 
    @Override

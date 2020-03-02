@@ -16,27 +16,23 @@
  */
 package org.apache.activemq.artemis.protocol.amqp.broker;
 
-import java.nio.ByteBuffer;
-
-import io.netty.buffer.ByteBuf;
-import io.netty.buffer.PooledByteBufAllocator;
 import org.apache.activemq.artemis.api.core.ActiveMQBuffer;
 import org.apache.activemq.artemis.api.core.ActiveMQException;
 import org.apache.activemq.artemis.core.persistence.CoreMessageObjectPools;
 import org.apache.activemq.artemis.core.persistence.Persister;
-import org.apache.activemq.artemis.protocol.amqp.util.NettyWritable;
 import org.apache.activemq.artemis.protocol.amqp.util.TLSEncode;
 import org.apache.activemq.artemis.utils.DataConstants;
 import org.apache.activemq.artemis.utils.collections.TypedProperties;
-import org.apache.qpid.proton.codec.EncoderImpl;
 import org.apache.qpid.proton.codec.ReadableBuffer;
-import org.apache.qpid.proton.codec.WritableBuffer;
+import org.apache.qpid.proton4j.buffer.ProtonBuffer;
+import org.apache.qpid.proton4j.buffer.ProtonByteBufferAllocator;
+import org.apache.qpid.proton4j.codec.EncoderState;
 
 // see https://docs.oasis-open.org/amqp/core/v1.0/os/amqp-core-messaging-v1.0-os.html#section-message-format
 public class AMQPStandardMessage extends AMQPMessage {
 
    // Buffer and state for the data backing this message.
-   protected ReadableBuffer data;
+   protected ProtonBuffer data;
 
    /**
     * Creates a new {@link AMQPStandardMessage} instance from binary encoded message data.
@@ -77,6 +73,29 @@ public class AMQPStandardMessage extends AMQPMessage {
                               TypedProperties extraProperties,
                               CoreMessageObjectPools coreMessageObjectPools) {
       super(messageFormat, extraProperties, coreMessageObjectPools);
+
+      if (data.hasArray()) {
+         this.data = ProtonByteBufferAllocator.DEFAULT.wrap(data.array(), data.arrayOffset(), data.remaining());
+      } else {
+         this.data = ProtonByteBufferAllocator.DEFAULT.allocate(data.remaining()).writeBytes(data.byteBuffer());
+      }
+
+      ensureMessageDataScanned();
+   }
+
+   /**
+    * Creates a new {@link AMQPStandardMessage} instance from binary encoded message data.
+    *
+    * @param messageFormat          The Message format tag given the in Transfer that carried this message
+    * @param data                   The encoded AMQP message in an {@link ReadableBuffer} wrapper.
+    * @param extraProperties        Broker specific extra properties that should be carried with this message
+    * @param coreMessageObjectPools Object pool used to accelerate some String operations.
+    */
+   public AMQPStandardMessage(long messageFormat,
+                              ProtonBuffer data,
+                              TypedProperties extraProperties,
+                              CoreMessageObjectPools coreMessageObjectPools) {
+      super(messageFormat, extraProperties, coreMessageObjectPools);
       this.data = data;
       ensureMessageDataScanned();
    }
@@ -97,14 +116,7 @@ public class AMQPStandardMessage extends AMQPMessage {
    public org.apache.activemq.artemis.api.core.Message copy() {
       ensureDataIsValid();
 
-      ReadableBuffer view = data.duplicate().rewind();
-      byte[] newData = new byte[view.remaining()];
-
-      // Copy the full message contents with delivery annotations as they will
-      // be trimmed on send and may become useful on the broker at a later time.
-      view.get(newData);
-
-      AMQPStandardMessage newEncode = new AMQPStandardMessage(this.messageFormat, newData, extraProperties, coreMessageObjectPools);
+      AMQPStandardMessage newEncode = new AMQPStandardMessage(this.messageFormat, data.copy(), extraProperties, coreMessageObjectPools);
       newEncode.setMessageID(this.getMessageID());
       return newEncode;
    }
@@ -113,11 +125,11 @@ public class AMQPStandardMessage extends AMQPMessage {
    public int getEncodeSize() {
       ensureDataIsValid();
       // The encoded size will exclude any delivery annotations that are present as we will clip them.
-      return data.remaining() - encodedDeliveryAnnotationsSize + getDeliveryAnnotationsForSendBufferSize();
+      return data.getReadableBytes() - encodedDeliveryAnnotationsSize + getDeliveryAnnotationsForSendBufferSize();
    }
 
    @Override
-   protected ReadableBuffer getData() {
+   protected ProtonBuffer getData() {
       return data;
    }
 
@@ -135,9 +147,9 @@ public class AMQPStandardMessage extends AMQPMessage {
       ensureDataIsValid();
       targetRecord.writeInt(internalPersistSize());
       if (data.hasArray()) {
-         targetRecord.writeBytes(data.array(), data.arrayOffset(), data.remaining());
+         targetRecord.writeBytes(data.getArray(), data.getArrayOffset(), data.getReadableBytes());
       } else {
-         targetRecord.writeBytes(data.byteBuffer());
+         targetRecord.writeBytes(data.toByteBuffer());
       }
    }
 
@@ -157,7 +169,7 @@ public class AMQPStandardMessage extends AMQPMessage {
       int size = record.readInt();
       byte[] recordArray = new byte[size];
       record.readBytes(recordArray);
-      data = ReadableBuffer.ByteBufferReader.wrap(ByteBuffer.wrap(recordArray));
+      data = ProtonByteBufferAllocator.DEFAULT.wrap(recordArray);
 
       // Message state is now that the underlying buffer is loaded, but the contents not yet scanned
       resetMessageData();
@@ -209,15 +221,13 @@ public class AMQPStandardMessage extends AMQPMessage {
       this.modified = false;
       this.messageDataScanned = NOT_SCANNED;
       int estimated = Math.max(1500, data != null ? data.capacity() + 1000 : 0);
-      ByteBuf buffer = PooledByteBufAllocator.DEFAULT.heapBuffer(estimated);
-      EncoderImpl encoder = TLSEncode.getEncoder();
+
+      final EncoderState state = TLSEncode.getEncoderState();
+      final ProtonBuffer buffer = ProtonByteBufferAllocator.DEFAULT.allocate(estimated);
 
       try {
-         NettyWritable writable = new NettyWritable(buffer);
-
-         encoder.setByteBuffer(writable);
          if (header != null) {
-            encoder.writeObject(header);
+            DEFAULT_ENCODER.writeObject(buffer, state, header);
          }
 
          // We currently do not encode any delivery annotations but it is conceivable
@@ -225,38 +235,33 @@ public class AMQPStandardMessage extends AMQPMessage {
          // to happen.
 
          if (messageAnnotations != null) {
-            encoder.writeObject(messageAnnotations);
+            DEFAULT_ENCODER.writeObject(buffer, state, messageAnnotations);
          }
          if (properties != null) {
-            encoder.writeObject(properties);
+            DEFAULT_ENCODER.writeObject(buffer, state, properties);
          }
 
          // Whenever possible avoid encoding sections we don't need to by
          // checking if application properties where loaded or added and
          // encoding only in that case.
          if (applicationProperties != null) {
-            encoder.writeObject(applicationProperties);
+            DEFAULT_ENCODER.writeObject(buffer, state, applicationProperties);
 
             // Now raw write the remainder body and footer if present.
             if (data != null && remainingBodyPosition != VALUE_NOT_PRESENT) {
-               writable.put(data.position(remainingBodyPosition));
+               data.getBytes(remainingBodyPosition, buffer);
             }
          } else if (data != null && applicationPropertiesPosition != VALUE_NOT_PRESENT) {
             // Writes out ApplicationProperties, Body and Footer in one go if present.
-            writable.put(data.position(applicationPropertiesPosition));
+            data.getBytes(applicationPropertiesPosition, buffer);
          } else if (data != null && remainingBodyPosition != VALUE_NOT_PRESENT) {
             // No Application properties at all so raw write Body and Footer sections
-            writable.put(data.position(remainingBodyPosition));
+            data.getBytes(remainingBodyPosition, buffer);
          }
-
-         byte[] bytes = new byte[buffer.writerIndex()];
-
-         buffer.readBytes(bytes);
-         data = ReadableBuffer.ByteBufferReader.wrap(ByteBuffer.wrap(bytes));
       } finally {
-         encoder.setByteBuffer((WritableBuffer) null);
-         buffer.release();
+         state.reset();
       }
+
+      data = buffer;
    }
 }
-

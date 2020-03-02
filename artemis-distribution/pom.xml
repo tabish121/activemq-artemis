@@ -185,7 +185,6 @@
          <version>${qpid.jms.version}</version>
       </dependency>
 
-
       <!-- Management Console Dependencies -->
        <dependency>
            <groupId>org.apache.activemq</groupId>
@@ -205,7 +204,7 @@
            <version>${project.version} </version>
            <type>war</type>
        </dependency>
-       
+
        <dependency>
          <groupId>commons-beanutils</groupId>
          <artifactId>commons-beanutils</artifactId>

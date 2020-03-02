@@ -20,6 +20,11 @@ package org.apache.activemq.artemis.protocol.amqp.util;
 import org.apache.qpid.proton.codec.AMQPDefinedTypes;
 import org.apache.qpid.proton.codec.DecoderImpl;
 import org.apache.qpid.proton.codec.EncoderImpl;
+import org.apache.qpid.proton4j.codec.CodecFactory;
+import org.apache.qpid.proton4j.codec.DecoderState;
+import org.apache.qpid.proton4j.codec.EncoderState;
+
+import io.netty.util.concurrent.FastThreadLocal;
 
 /** This can go away if Proton provides this feature. */
 public class TLSEncode {
@@ -31,9 +36,12 @@ public class TLSEncode {
       {
          AMQPDefinedTypes.registerAllTypes(decoder, encoder);
       }
+
+      DecoderState decoderState = CodecFactory.getDefaultDecoder().newDecoderState();
+      EncoderState encoderState = CodecFactory.getDefaultEncoder().newEncoderState();
    }
 
-   private static final ThreadLocal<EncoderDecoderPair> tlsCodec = new ThreadLocal<EncoderDecoderPair>() {
+   private static final FastThreadLocal<EncoderDecoderPair> tlsCodec = new FastThreadLocal<EncoderDecoderPair>() {
       @Override
       protected EncoderDecoderPair initialValue() {
          return new EncoderDecoderPair();
@@ -48,5 +56,11 @@ public class TLSEncode {
       return tlsCodec.get().decoder;
    }
 
+   public static DecoderState getDecoderState() {
+      return tlsCodec.get().decoderState;
+   }
 
+   public static EncoderState getEncoderState() {
+      return tlsCodec.get().encoderState;
+   }
 }

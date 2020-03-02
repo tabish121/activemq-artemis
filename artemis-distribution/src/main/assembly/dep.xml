@@ -85,6 +85,9 @@
             <include>org.jctools:jctools-core</include>
             <include>io.netty:netty-all</include>
             <include>org.apache.qpid:proton-j</include>
+            <include>org.apache.qpid:qpid-proton4j-common</include>
+            <include>org.apache.qpid:qpid-proton4j-codec</include>
+            <include>org.apache.qpid:qpid-proton4j-buffer</include>
             <include>org.apache.activemq:activemq-client</include>
             <include>org.apache.activemq:activemq-openwire-legacy</include>
             <include>org.slf4j:slf4j-api</include>
@@ -154,7 +157,7 @@
          <outputDirectory>web/api</outputDirectory>
          <unpack>true</unpack>
       </dependencySet>
-      
+
       <!-- Management Console Dependencies -->
       <dependencySet>
          <includes>
@@ -180,7 +183,7 @@
          <unpack>false</unpack>
          <outputFileNameMapping>artemis-plugin.war</outputFileNameMapping>
       </dependencySet>
-      
+
    </dependencySets>
    <fileSets>
       <!-- schema -->
