@@ -35,7 +35,7 @@ import org.osgi.service.component.annotations.Component;
 @Component(service = ProtocolManagerFactory.class)
 public class ProtonProtocolManagerFactory extends AbstractProtocolManagerFactory<AmqpInterceptor> {
 
-   public static final String AMQP_PROTOCOL_NAME = "AMQP";
+   public static final String AMQP_PROTOCOL_NAME = "AMQP1";
 
    private static final String MODULE_NAME = "artemis-amqp-protocol";
 
