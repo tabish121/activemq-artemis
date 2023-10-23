@@ -17,6 +17,7 @@
 package org.apache.activemq.artemis.protocol.amqp.broker;
 
 import javax.security.auth.Subject;
+import java.lang.invoke.MethodHandles;
 import java.util.concurrent.Executor;
 
 import org.apache.activemq.artemis.api.core.ActiveMQBuffer;
@@ -29,11 +30,15 @@ import org.apache.activemq.artemis.protocol.amqp.sasl.SASLResult;
 import org.apache.activemq.artemis.spi.core.protocol.AbstractRemotingConnection;
 import org.apache.activemq.artemis.spi.core.remoting.Connection;
 import org.apache.qpid.proton.amqp.transport.ErrorCondition;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * This is a Server's Connection representation used by ActiveMQ Artemis.
  */
 public class ActiveMQProtonRemotingConnection extends AbstractRemotingConnection {
+
+   private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
    private final AMQPConnectionContext amqpConnection;
 
@@ -73,17 +78,22 @@ public class ActiveMQProtonRemotingConnection extends AbstractRemotingConnection
 
       destroyed = true;
 
-      //filter it like the other protocols
-      if (!(me instanceof ActiveMQRemoteDisconnectException)) {
-         ActiveMQClientLogger.LOGGER.connectionFailureDetected(amqpConnection.getConnectionCallback().getTransportConnection().getRemoteAddress(), me.getMessage(), me.getType());
-      }
+      amqpConnection.runNow(() -> {
+         logger.warn("A connection failed");
 
-      // Then call the listeners
-      callFailureListeners(me, scaleDownTargetNodeID);
+         //filter it like the other protocols
+         if (!(me instanceof ActiveMQRemoteDisconnectException)) {
+            ActiveMQClientLogger.LOGGER.connectionFailureDetected(amqpConnection.getConnectionCallback().getTransportConnection().getRemoteAddress(), me.getMessage(), me.getType());
+         }
 
-      callClosingListeners();
+         // Then call the listeners
+         callFailureListeners(me, scaleDownTargetNodeID);
 
-      internalClose();
+         callClosingListeners();
+
+         internalClose();
+      });
+
    }
 
    @Override

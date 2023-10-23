@@ -45,7 +45,11 @@ public class MQTTConnection extends AbstractRemotingConnection {
    }
 
    @Override
-   public void fail(ActiveMQException me) {
+   public void fail(final ActiveMQException me) {
+      runInHandler(() -> internalFail(me));
+   }
+
+   private void internalFail(ActiveMQException me) {
       List<FailureListener> copy = new ArrayList<>(failureListeners);
       for (FailureListener listener : copy) {
          listener.connectionFailed(me, false);

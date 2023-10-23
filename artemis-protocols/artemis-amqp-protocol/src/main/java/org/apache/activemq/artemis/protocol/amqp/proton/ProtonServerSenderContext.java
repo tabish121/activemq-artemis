@@ -980,6 +980,12 @@ public class ProtonServerSenderContext extends ProtonInitializable implements Pr
 
       @Override
       public Consumer init(ProtonServerSenderContext senderContext) throws Exception {
+
+         if (connection.getHandler().getConnection().getRemoteState() == EndpointState.CLOSED) {
+            logger.warn("AMQP Connection creating invalid consumer for closed connection", connection);
+            throw new IllegalStateException("AMQP connection " + connection.getRemoteAddress() + " creating invalid consumer for closed connection");
+         }
+
          Source source = (Source) sender.getRemoteSource();
          final Map<Symbol, Object> supportedFilters = new HashMap<>();
 

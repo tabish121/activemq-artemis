@@ -42,6 +42,7 @@ import org.apache.activemq.artemis.spi.core.remoting.ConnectionLifeCycleListener
 import org.apache.activemq.artemis.utils.ActiveMQThreadFactory;
 import org.apache.activemq.artemis.utils.ActiveMQThreadPoolExecutor;
 import org.apache.activemq.artemis.utils.ConfigurationHelper;
+import org.apache.activemq.artemis.utils.actors.ArtemisExecutor;
 import org.apache.activemq.artemis.utils.actors.OrderedExecutorFactory;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -232,7 +233,7 @@ public class InVMConnector extends AbstractConnector {
    // This may be an injection point for mocks on tests
    protected Connection internalCreateConnection(final BufferHandler handler,
                                                  final ClientConnectionLifeCycleListener listener,
-                                                 final Executor serverExecutor) {
+                                                 final ArtemisExecutor serverExecutor) {
       // No acceptor on a client connection
       InVMConnection inVMConnection = new InVMConnection(id, handler, listener, serverExecutor);
       inVMConnection.setEnableBufferPooling(bufferPoolingEnabled);

@@ -24,10 +24,12 @@ import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import io.netty.channel.ChannelFutureListener;
+import io.netty.channel.EventLoop;
 import org.apache.activemq.artemis.api.core.ActiveMQBuffer;
 import org.apache.activemq.artemis.api.core.ActiveMQBuffers;
 import org.apache.activemq.artemis.api.core.ActiveMQInterruptedException;
 import org.apache.activemq.artemis.api.core.TransportConfiguration;
+import org.apache.activemq.artemis.core.remoting.impl.ExecutorNettyAdapter;
 import org.apache.activemq.artemis.core.security.ActiveMQPrincipal;
 import org.apache.activemq.artemis.core.server.ActiveMQServerLogger;
 import org.apache.activemq.artemis.spi.core.protocol.RemotingConnection;
@@ -36,6 +38,7 @@ import org.apache.activemq.artemis.spi.core.remoting.BufferHandler;
 import org.apache.activemq.artemis.spi.core.remoting.Connection;
 import org.apache.activemq.artemis.spi.core.remoting.ReadyListener;
 import org.apache.activemq.artemis.utils.UUIDGenerator;
+import org.apache.activemq.artemis.utils.actors.ArtemisExecutor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import java.lang.invoke.MethodHandles;
@@ -57,7 +60,7 @@ public class InVMConnection implements Connection {
 
    private final int serverID;
 
-   private final Executor executor;
+   private final ArtemisExecutor executor;
 
    private volatile boolean closing;
 
@@ -72,7 +75,7 @@ public class InVMConnection implements Connection {
    public InVMConnection(final int serverID,
                          final BufferHandler handler,
                          final BaseConnectionLifeCycleListener listener,
-                         final Executor executor) {
+                         final ArtemisExecutor executor) {
       this(serverID, UUIDGenerator.getInstance().generateSimpleStringUUID().toString(), handler, listener, executor);
    }
 
@@ -80,7 +83,7 @@ public class InVMConnection implements Connection {
                          final String id,
                          final BufferHandler handler,
                          final BaseConnectionLifeCycleListener listener,
-                         final Executor executor) {
+                         final ArtemisExecutor executor) {
       this(serverID, id, handler, listener, executor, null);
    }
 
@@ -88,7 +91,7 @@ public class InVMConnection implements Connection {
                          final String id,
                          final BufferHandler handler,
                          final BaseConnectionLifeCycleListener listener,
-                         final Executor executor,
+                         final ArtemisExecutor executor,
                          final ActiveMQPrincipal defaultActiveMQPrincipal) {
 
       this.serverID = serverID;
@@ -246,6 +249,11 @@ public class InVMConnection implements Connection {
          // Ignore - this can happen if server/client is shutdown and another request comes in
       }
 
+   }
+
+   @Override
+   public EventLoop getEventLoop() {
+      return new ExecutorNettyAdapter(executor);
    }
 
    @Override

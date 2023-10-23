@@ -92,6 +92,11 @@ public class NettyConnection implements Connection {
       this.batchingEnabled = batchingEnabled;
    }
 
+   @Override
+   public EventLoop getEventLoop() {
+      return channel.eventLoop();
+   }
+
    private static void waitFor(ChannelPromise promise, long millis) {
       try {
          final boolean completed = promise.await(millis);

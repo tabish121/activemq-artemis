@@ -194,6 +194,11 @@
          <artifactId>jakarta.json-api</artifactId>
          <scope>test</scope>
       </dependency>
+      <dependency>
+         <groupId>org.apache.qpid</groupId>
+         <artifactId>protonj2-test-driver</artifactId>
+         <scope>test</scope>
+      </dependency>
    </dependencies>
 
    <build>

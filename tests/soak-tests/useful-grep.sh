@@ -1,0 +1,2 @@
+cat test.log | grep -e "repeat" -e iter -e "return" -e "OUT_QUEUE" -e "TEST_CLIENT_FAILURE" -e "received"
+tail -f test.log | grep -e "repeat" -e iter -e "return" -e "OUT_QUEUE" -e "TEST_CLIENT_FAILURE" -e "received"

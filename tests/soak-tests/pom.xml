@@ -161,6 +161,11 @@
          <artifactId>jakarta.management.j2ee-api</artifactId>
          <scope>test</scope>
       </dependency>
+      <dependency>
+         <groupId>org.apache.qpid</groupId>
+         <artifactId>protonj2-test-driver</artifactId>
+         <scope>test</scope>
+      </dependency>
 
       <!-- The johnzon-core and json-api contents are repackaged in -commons,
            However maven can still need them during tests, which run against

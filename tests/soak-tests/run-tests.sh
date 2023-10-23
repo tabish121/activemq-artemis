@@ -1,0 +1,1 @@
+. ./src/test/scripts/parameters.sh ; ../../scripts/one-test.sh ClientFailureSoakTest | tee test.log

@@ -53,6 +53,14 @@ public abstract class AbstractRemotingConnection implements RemotingConnection {
    private String clientId;
    private Subject subject;
 
+   protected void runInHandler(Runnable run) {
+      if (transportConnection.getEventLoop().inEventLoop()) {
+         run.run();
+      } else {
+         transportConnection.getEventLoop().execute(run);
+      }
+   }
+
    public AbstractRemotingConnection(final Connection transportConnection, final Executor executor) {
       this.transportConnection = transportConnection;
       this.transportConnection.setProtocolConnection(this);
