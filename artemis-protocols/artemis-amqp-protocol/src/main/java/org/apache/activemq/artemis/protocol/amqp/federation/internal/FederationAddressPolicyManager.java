@@ -180,6 +180,8 @@ public abstract class FederationAddressPolicyManager implements ActiveMQServerBi
       if (entry != null && entry.reduceDemand()) {
          final FederationConsumerInternal federationConsuner = entry.getConsumer();
 
+         logger.debug("Removeing federation consumer for address with no demand: {}", addressInfo);
+
          try {
             signalBeforeCloseFederationConsumer(federationConsuner);
             federationConsuner.close();

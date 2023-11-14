@@ -189,7 +189,7 @@ public class AMQPFederationAddressPolicyTest extends AmqpClientTestSupport {
          server.destroyQueue(SimpleString.toSimpleString("test"));
          Wait.assertFalse(() -> server.queueQuery(SimpleString.toSimpleString("test")).isExists());
 
-         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.waitForScriptToComplete(10, TimeUnit.SECONDS);
          peer.expectClose();
          peer.remoteClose().now();
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);

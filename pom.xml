@@ -248,7 +248,7 @@
          -Dlog4j2.configurationFile="file:${activemq.basedir}/tests/config/${logging.config}"
       </activemq-surefire-argline>
       <activemq.basedir>${project.basedir}</activemq.basedir>
-      <proton.trace.frames>false</proton.trace.frames>
+      <proton.trace.frames>true</proton.trace.frames>
 
       <directory-version>2.0.0.AM25</directory-version>
       <directory-jdbm2-version>2.0.0-M1</directory-jdbm2-version>
