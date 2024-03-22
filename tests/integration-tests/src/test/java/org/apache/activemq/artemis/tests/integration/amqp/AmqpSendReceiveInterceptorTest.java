@@ -23,6 +23,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import org.apache.activemq.artemis.api.core.ActiveMQException;
+import org.apache.activemq.artemis.api.core.SimpleString;
+import org.apache.activemq.artemis.core.server.Queue;
 import org.apache.activemq.artemis.protocol.amqp.broker.AMQPMessage;
 import org.apache.activemq.artemis.protocol.amqp.broker.AmqpInterceptor;
 import org.apache.activemq.artemis.spi.core.protocol.RemotingConnection;
@@ -299,6 +301,70 @@ public class AmqpSendReceiveInterceptorTest extends AmqpClientTestSupport {
       assertTrue(passed[0], "connection not set");
       sender.close();
       receiver.close();
+      connection.close();
+   }
+
+   @Test(timeout = 60000)
+   public void testPruneMessageAnnotationsReducesMessageSize() throws Exception {
+      final AmqpClient client = createAmqpClient();
+      final AmqpConnection connection = addConnection(client.connect());
+      final AmqpSession session = connection.createSession();
+
+      final AmqpSender sender = session.createSender(getQueueName());
+      final AmqpMessage message = new AmqpMessage();
+
+      message.setMessageId("msg" + 1);
+      message.setText("Test-Message");
+
+      message.setMessageAnnotation("test-1", "test-------1");
+      message.setMessageAnnotation("test-2", "test-------2");
+      message.setMessageAnnotation("test-3", "test-------3");
+      message.setMessageAnnotation("test-4", "test-------4");
+      message.setMessageAnnotation("test-5", "test-------5");
+
+      final int MESSAGE_COUNT = 1;
+
+      for (int i = 0; i < MESSAGE_COUNT; ++i) {
+         sender.send(message);
+      }
+
+      final CountDownLatch latch = new CountDownLatch(1);
+      server.getRemotingService().addOutgoingInterceptor(new AmqpInterceptor() {
+
+         @Override
+         public boolean intercept(AMQPMessage message, RemotingConnection connection) throws ActiveMQException {
+            message.removeAnnotation(SimpleString.toSimpleString("test-1"));
+            message.messageChanged();
+
+            latch.countDown();
+            return true;
+         }
+      });
+
+      final AmqpReceiver receiver = session.createReceiver(getQueueName());
+      receiver.flow(MESSAGE_COUNT);
+
+      for (int i = 0; i < MESSAGE_COUNT; ++i) {
+         final AmqpMessage amqpMessage = receiver.receive(5, TimeUnit.SECONDS);
+
+         assertNotNull(amqpMessage);
+
+         amqpMessage.accept();
+      }
+
+      receiver.close();
+
+      assertEquals(latch.getCount(), 0);
+
+      final Queue queue = getProxyToQueue(getQueueName());
+
+      System.out.println("Delivering Size = " + queue.getDeliveringSize());
+      System.out.println("Persistent Size = " + queue.getPersistentSize());
+
+      assertEquals(0, queue.getMessageCount());
+      assertEquals(0, queue.getDeliveringSize());
+
+      sender.close();
       connection.close();
    }
 }
