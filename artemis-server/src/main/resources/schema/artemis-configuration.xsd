@@ -1585,7 +1585,10 @@
       </xsd:annotation>
       <xsd:complexType>
          <xsd:sequence>
-            <xsd:element name="federation" type="federationType" maxOccurs="unbounded" minOccurs="0"/>
+            <xsd:choice maxOccurs="unbounded" minOccurs="0">
+               <xsd:element name="federation" type="federationType"/>
+               <xsd:element name="amqp-federation" type="federationType-amqp"/>
+            </xsd:choice>
          </xsd:sequence>
          <xsd:attributeGroup ref="xml:specialAttrs"/>
       </xsd:complexType>
@@ -1849,6 +1852,101 @@
       </xsd:sequence>
       <xsd:attribute name="name" type="xsd:ID" use="required" />
       <xsd:attributeGroup ref="xml:specialAttrs"/>
+   </xsd:complexType>
+
+   <!-- AMQP FEDERATION TYPE CONFIGURATION -->
+
+   <xsd:complexType name="federationType-amqp">
+      <xsd:sequence>
+         <xsd:element name="peer" type="federation-amqp-connection-type" minOccurs="1" maxOccurs="unbounded" />
+         <xsd:choice maxOccurs="unbounded" minOccurs="0">
+            <xsd:element name="queue-policy" type="amqpFederationQueuePolicyTypeExtension" />
+            <xsd:element name="address-policy" type="amqpFederationAddressPolicyTypeExtension" />
+            <xsd:element name="policy-set" type="policySetType" />
+         </xsd:choice>
+         <xsd:element name="transformer" type="federationTransformerType" minOccurs="0" maxOccurs="unbounded" />
+      </xsd:sequence>
+      <xsd:attribute name="name" type="xsd:ID" use="required" />
+      <xsd:attribute name="user" type="xsd:string" use="optional" />
+      <xsd:attribute name="password" type="xsd:string" use="optional" />
+      <xsd:attributeGroup ref="xml:specialAttrs"/>
+   </xsd:complexType>
+
+   <xsd:complexType name="federation-amqp-connection-type">
+      <xsd:annotation>
+         <xsd:documentation>
+            Defines an individual AMQP Federation broker connection for federation of messages either to
+            or from a remote peer based on configured federation policy.
+         </xsd:documentation>
+      </xsd:annotation>
+      <xsd:sequence>
+         <xsd:choice maxOccurs="1" minOccurs="1">
+            <xsd:element name="connection-uri" type="xsd:string" />
+            <xsd:element name="connector-ref" type="xsd:string" />
+         </xsd:choice>
+         <xsd:element name="policy" type="policyRefType" minOccurs="0" maxOccurs="unbounded">
+            <xsd:annotation>
+               <xsd:documentation>
+                  Optional reference to a policy set or an individual address or queue policy that
+                  is used to federate messages from the remote peer.
+               </xsd:documentation>
+            </xsd:annotation>
+         </xsd:element>
+         <xsd:element name="remote-policy" type="policyRefType" minOccurs="0" maxOccurs="unbounded">
+            <xsd:annotation>
+               <xsd:documentation>
+                  Optional reference to a policy set or an individual address or queue policy that
+                  is used to federate message to the remote peer.
+               </xsd:documentation>
+            </xsd:annotation>
+         </xsd:element>
+         <xsd:element ref="property" minOccurs="0" maxOccurs="unbounded">
+            <xsd:annotation>
+               <xsd:documentation>
+                  Optional properties that can be applied to the Connection of this federation policy
+               </xsd:documentation>
+            </xsd:annotation>
+         </xsd:element>
+      </xsd:sequence>
+      <xsd:attribute name="auto-start" type="xsd:boolean" default="true"/>
+      <xsd:attribute name="reconnect-attempts" type="xsd:int" default="-1"/>
+      <xsd:attribute name="retry-interval" type="xsd:long" default="5000"/>
+      <xsd:attribute name="user" type="xsd:string" use="optional"/>
+      <xsd:attribute name="password" type="xsd:string" use="optional"/>
+      <xsd:attribute name="name" type="xsd:string" use="required"/>
+      <xsd:attributeGroup ref="xml:specialAttrs"/>
+   </xsd:complexType>
+
+   <xsd:complexType name="amqpFederationQueuePolicyTypeExtension">
+      <xsd:complexContent>
+         <xsd:extension base="amqpFederationQueuePolicyType">
+            <xsd:attribute name="transformer-ref" type="xsd:string" use="optional" >
+               <xsd:annotation>
+                  <xsd:documentation>
+                     Reference to a named transformer defined in the current AMQP federation definition
+                     which is only applied if a transformer is not configured in the policy element
+                     definition.
+                  </xsd:documentation>
+               </xsd:annotation>
+            </xsd:attribute>
+         </xsd:extension>
+      </xsd:complexContent>
+   </xsd:complexType>
+
+   <xsd:complexType name="amqpFederationAddressPolicyTypeExtension">
+      <xsd:complexContent>
+         <xsd:extension base="amqpFederationAddressPolicyType">
+            <xsd:attribute name="transformer-ref" type="xsd:string" use="optional" >
+               <xsd:annotation>
+                  <xsd:documentation>
+                     Reference to a named transformer defined in the current AMQP federation definition
+                     which is only applied if a transformer is not configured in the policy element
+                     definition.
+                  </xsd:documentation>
+               </xsd:annotation>
+            </xsd:attribute>
+         </xsd:extension>
+      </xsd:complexContent>
    </xsd:complexType>
 
    <!-- TRANSFORMER CONFIGURATION -->

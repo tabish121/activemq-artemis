@@ -660,6 +660,14 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
          parseFederationConfiguration(fedNode, config);
       }
 
+      NodeList amqpFedNodes = e.getElementsByTagName("amqp-federation");
+
+      for (int i = 0; i < amqpFedNodes.getLength(); i++) {
+         Element amqpFedNode = (Element) amqpFedNodes.item(i);
+
+         parseAMQPFederationConfiguration(amqpFedNode, config);
+      }
+
       NodeList gaNodes = e.getElementsByTagName("grouping-handler");
 
       for (int i = 0; i < gaNodes.getLength(); i++) {
@@ -2569,6 +2577,164 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
       mainConfig.getBridgeConfigurations().add(config);
    }
 
+   private void parseAMQPFederationConfiguration(final Element fedNode, final Configuration mainConfig) throws Exception {
+      final Map<String, FederationPolicySet> policySets = new HashMap<>();
+      final Map<String, AMQPFederationQueuePolicyElement> queuePolicies = new HashMap<>();
+      final Map<String, AMQPFederationAddressPolicyElement> addressPolicies = new HashMap<>();
+      final Map<String, TransformerConfiguration> transformers = new HashMap<>();
+      final String federationName = getAttributeValue(fedNode, "name");
+      final NodeList children = fedNode.getChildNodes();
+
+      // First parse out all transformer definitions so that we can expand them for any address or
+      // queue policies that reference them vs providing their own transformer definition.
+
+      for (int i = 0; i < children.getLength(); i++) {
+         final Node child = children.item(i);
+
+         if (child.getNodeName().equals("transformer")) {
+            transformers.put(((Element) child).getAttribute("name"), getTransformerConfiguration(child));
+         }
+      }
+
+      // Second Parse out all address and queue policies and any defined policy sets so
+      // they can be added to each connection that references them.
+
+      for (int i = 0; i < children.getLength(); i++) {
+         final Node child = children.item(i);
+
+         if (child.getNodeName().equals("policy-set")) {
+            final FederationPolicySet policySet = getPolicySet((Element)child, mainConfig);
+            policySets.put(policySet.getName(), policySet);
+         } else if (child.getNodeName().equals("queue-policy")) {
+            final AMQPFederationQueuePolicyElement queuePolicy = parseAMQPFederatedFromQueuePolicy((Element)child, mainConfig);
+            final String transformerRef = ((Element) child).getAttribute("transformer-ref");
+
+            if (transformerRef != null && queuePolicy.getTransformerConfiguration() == null) {
+               queuePolicy.setTransformerConfiguration(transformers.get(transformerRef));
+            }
+
+            queuePolicies.put(queuePolicy.getName(), queuePolicy);
+         } else if (child.getNodeName().equals("address-policy")) {
+            final AMQPFederationAddressPolicyElement addressPolicy = parseAMQPFederatedFromAddressPolicy((Element)child, mainConfig);
+            final String transformerRef = getAttributeValue(child, "transformer-ref");
+
+            if (addressPolicy.getTransformerConfiguration() == null && (transformerRef != null && !transformerRef.isEmpty())) {
+               addressPolicy.setTransformerConfiguration(transformers.get(transformerRef));
+            }
+
+            addressPolicies.put(addressPolicy.getName(), addressPolicy);
+         }
+      }
+
+      // Third parse the connection elements and assemble a broker connection using all three bits
+      // of data parsed to that point.
+
+      for (int i = 0; i < children.getLength(); i++) {
+         final Node child = children.item(i);
+
+         if (child.getNodeName().equals("peer")) {
+            final Element amqpConnection = (Element) child;
+            final String connectionName = amqpConnection.getAttribute("name");
+            final String username = getAttributeValue(amqpConnection, "user") != null ?
+               getAttributeValue(amqpConnection, "user") : getAttributeValue(fedNode, "user");
+
+            String password = getAttributeValue(amqpConnection, "password");
+            if (password == null || password.isEmpty()) {
+               password = getAttributeValue(fedNode, "password");
+            }
+            if (password != null && !password.isEmpty()) {
+               password = PasswordMaskingUtil.resolveMask(mainConfig.isMaskPassword(), password, mainConfig.getPasswordCodec());
+            }
+
+            final int retryInterval = getAttributeInteger(amqpConnection, "retry-interval", 5000, GT_ZERO);
+            final int reconnectAttempts = getAttributeInteger(amqpConnection, "reconnect-attempts", -1, MINUS_ONE_OR_GT_ZERO);
+            final boolean autoStart = getBooleanAttribute(amqpConnection, "auto-start", true);
+
+            final AMQPFederatedBrokerConnectionElement federation = new AMQPFederatedBrokerConnectionElement(connectionName);
+            final AMQPBrokerConnectConfiguration configuration = new AMQPBrokerConnectConfiguration();
+
+            configuration.setUser(username);
+            configuration.setPassword(password);
+            configuration.setName(federationName + ":" + connectionName);
+            configuration.setAutostart(autoStart);
+            configuration.setRetryInterval(retryInterval);
+            configuration.setReconnectAttempts(reconnectAttempts);
+            configuration.addFederation(federation);
+
+            final NodeList connectionElements = child.getChildNodes();
+
+            for (int j = 0; j < connectionElements.getLength(); j++) {
+               final Node connectionElement = connectionElements.item(j);
+
+               if (connectionElement.getNodeName().equals("connection-uri")) {
+                  configuration.setUri(getTrimmedTextContent(connectionElement));
+               } else if (connectionElement.getNodeName().equals("connector-ref")) {
+                  final String connectorRef = getTrimmedTextContent(connectionElement);
+
+                  if (mainConfig.getConnectorConfigurations().containsKey(connectorRef)) {
+                     configuration.setTransportConfigurations(
+                        Collections.singletonList(mainConfig.getConnectorConfigurations().get(connectorRef)));
+                  } else {
+                     throw new IllegalArgumentException("Connector reference not found in configuration: " + connectorRef);
+                  }
+               } else if (connectionElement.getNodeName().equals("policy")) {
+                  final String policyRef = getAttributeValue(connectionElement, "ref");
+
+                  // These are references to either a concrete address or queue policy or
+                  // to a policy set that references concrete address or queue policies.
+                  expandFederationPolicyReferences(federation, policyRef, true, policySets, queuePolicies, addressPolicies, 0);
+               } else if (connectionElement.getNodeName().equals("remote-policy")) {
+                  final String policyRef = getAttributeValue(connectionElement, "ref");
+
+                  // These are references to either a concrete address or queue policy or
+                  // to a policy set that references concrete address or queue policies.
+                  expandFederationPolicyReferences(federation, policyRef, false, policySets, queuePolicies, addressPolicies, 0);
+               } else if (connectionElement.getNodeName().equals("property")) {
+                  federation.addProperty(getAttributeValue(connectionElement, "key"), getAttributeValue(connectionElement, "value"));
+               }
+            }
+
+            logger.debug("Adding AMQP federation connection :: {}", configuration);
+            mainConfig.addAMQPConnection(configuration);
+         }
+      }
+   }
+
+   private static final int FEDERATION_POLICY_REFERENCE_RECURSION_LIMIT = 10;
+
+   private static void expandFederationPolicyReferences(AMQPFederatedBrokerConnectionElement federation,
+                                                        String policyReference, boolean local,
+                                                        Map<String, FederationPolicySet> policySets,
+                                                        Map<String, AMQPFederationQueuePolicyElement> queuePolicies,
+                                                        Map<String, AMQPFederationAddressPolicyElement> addressPolicies,
+                                                        int recursionDepth) throws Exception {
+      if (policySets.containsKey(policyReference)) {
+         if (recursionDepth < FEDERATION_POLICY_REFERENCE_RECURSION_LIMIT) {
+            final FederationPolicySet policySet = policySets.get(policyReference);
+
+            for (String reference : policySet.getPolicyRefs()) {
+               expandFederationPolicyReferences(federation, reference, local, policySets, queuePolicies, addressPolicies, recursionDepth + 1);
+            }
+         } else {
+            ActiveMQServerLogger.LOGGER.federationAvoidStackOverflowPolicyRef(federation.getName(), policyReference);
+         }
+      } else if (queuePolicies.containsKey(policyReference)) {
+         if (local) {
+            federation.addLocalQueuePolicy(queuePolicies.get(policyReference));
+         } else {
+            federation.addRemoteQueuePolicy(queuePolicies.get(policyReference));
+         }
+      } else if (addressPolicies.containsKey(policyReference)) {
+         if (local) {
+            federation.addLocalAddressPolicy(addressPolicies.get(policyReference));
+         } else {
+            federation.addRemoteAddressPolicy(addressPolicies.get(policyReference));
+         }
+      } else {
+         ActiveMQServerLogger.LOGGER.federationCantFindPolicyRef(federation.getName(), policyReference);
+      }
+   }
+
    private void parseFederationConfiguration(final Element fedNode, final Configuration mainConfig) throws Exception {
       FederationConfiguration config = new FederationConfiguration();
 
@@ -2611,7 +2777,6 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
       }
 
       mainConfig.getFederationConfigurations().add(config);
-
    }
 
    private FederationQueuePolicyConfiguration getQueuePolicy(Element policyNod, final Configuration mainConfig) throws Exception {
@@ -2643,7 +2808,6 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
             config.addExclude(getQueueMatcher((Element) child));
          }
       }
-
 
       return config;
    }
@@ -2689,7 +2853,6 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
             config.addExclude(getAddressMatcher((Element) child));
          }
       }
-
 
       return config;
    }

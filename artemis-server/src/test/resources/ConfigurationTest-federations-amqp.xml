@@ -1,0 +1,159 @@
+<!--
+  Licensed to the Apache Software Foundation (ASF) under one or more
+  contributor license agreements.  See the NOTICE file distributed with
+  this work for additional information regarding copyright ownership.
+  The ASF licenses this file to You under the Apache License, Version 2.0
+  (the "License"); you may not use this file except in compliance with
+  the License.  You may obtain a copy of the License at
+
+  http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+<configuration
+        xmlns="urn:activemq"
+        xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+        xsi:schemaLocation="urn:activemq ../../src/schemas/artemis-server.xsd ">
+   <!-- just use the defaults -->
+   <core xmlns="urn:activemq:core">
+
+      <connectors>
+         <connector name="connector1">
+            tcp://amqp-federation-host-5:5678
+         </connector>
+      </connectors>
+
+      <federations>
+
+         <!--  Federation #1 -->
+         <amqp-federation name="amqp-federation-1">
+            <peer name="connection-1" user="westuser" password="32a10275cf4ab4e9" auto-start="true" retry-interval="42" reconnect-attempts="1">
+               <connection-uri>tcp://test-amqp-federation-1:6556</connection-uri>
+               <policy ref="policySetA"/>
+            </peer>
+            <peer name="connection-2" user="eastuser" password="32a10275cf4ab4e9" auto-start="false" retry-interval="43" reconnect-attempts="2">
+               <connection-uri>tcp://test-amqp-federation-2:6556</connection-uri>
+               <policy ref="policySetA"/>
+               <property key="key1" value="value1"/>
+               <property key="key2" value="value2"/>
+            </peer>
+
+            <policy-set name="policySetA">
+               <policy ref="address-federation-1" />
+               <policy ref="queue-federation-1" />
+            </policy-set>
+
+            <queue-policy name="queue-federation-1" priority-adjustment="-5" include-federated="true">
+               <exclude queue-match="the_queue" address-match="#" />
+               <property key="property1" value="value1"/>
+            </queue-policy>
+            <address-policy name="address-federation-1"
+                            auto-delete="true"
+                            auto-delete-message-count="12"
+                            auto-delete-delay="12345"
+                            max-hops="5"
+                            enable-divert-bindings="true" >
+               <include address-match="the_address" />
+            </address-policy>
+         </amqp-federation>
+
+         <!--  Federation #2 -->
+         <amqp-federation name="amqp-federation-2" user="globaluser" password="32a10275cf4ab4e9">
+            <peer name="connection-1">
+               <connection-uri>tcp://test-amqp-federation-1:6556</connection-uri>
+               <policy ref="address-federation-2-1"/>
+               <policy ref="address-federation-2-2"/>
+            </peer>
+            <peer name="connection-2" >
+               <connection-uri>tcp://test-amqp-federation-2:6556</connection-uri>
+               <policy ref="queue-federation-2"/>
+            </peer>
+
+            <queue-policy name="queue-federation-2" >
+               <exclude queue-match="the_queue" address-match="#" />
+            </queue-policy>
+
+            <address-policy name="address-federation-2-1" >
+               <include address-match="the_address" />
+            </address-policy>
+            <address-policy name="address-federation-2-2" >
+               <include address-match="the_other_address" />
+               <exclude address-match="the_excluded_address" />
+               <transformer>
+                  <class-name>org.foo.FederationTransformer2</class-name>
+                  <property key="federationTransformerKey1" value="federationTransformerValue1"/>
+                  <property key="federationTransformerKey2" value="federationTransformerValue2"/>
+               </transformer>
+            </address-policy>
+         </amqp-federation>
+
+         <!--  Federation #3 -->
+         <amqp-federation name="amqp-federation-3" user="globaluser" password="32a10275cf4ab4e9">
+            <peer name="connection-1">
+               <connector-ref>connector1</connector-ref>
+               <policy ref="policySet-Address"/>
+               <policy ref="queue-federation-3"/>
+
+               <remote-policy ref="address-federation-3"/>
+               <remote-policy ref="policySet-Queue"/>
+            </peer>
+
+            <policy-set name="policySet-Queue">
+               <policy ref="queue-federation-3" />
+            </policy-set>
+
+            <policy-set name="policySet-Address">
+               <policy ref="address-federation-3" />
+            </policy-set>
+
+            <queue-policy name="queue-federation-3" transformer-ref="federation-transformer-3" >
+               <exclude queue-match="the_queue" address-match="#" />
+            </queue-policy>
+            <address-policy name="address-federation-3" transformer-ref="federation-transformer-3" >
+               <include address-match="the_address" />
+            </address-policy>
+
+            <transformer name="federation-transformer-3">
+               <class-name>org.foo.FederationTransformer3</class-name>
+               <property key="federationTransformerKey1" value="federationTransformerValue1"/>
+               <property key="federationTransformerKey2" value="federationTransformerValue2"/>
+            </transformer>
+         </amqp-federation>
+
+         <!--  Federation #3 -->
+         <amqp-federation name="amqp-federation-4" user="globaluser" password="32a10275cf4ab4e9">
+            <peer name="connection-1">
+               <connector-ref>connector1</connector-ref>
+
+               <policy ref="policySet-Level1"/>
+               <remote-policy ref="policySet-Level1"/>
+            </peer>
+
+            <policy-set name="policySet-Level1">
+               <policy ref="policySet-Level2" />
+            </policy-set>
+
+            <policy-set name="policySet-Level2">
+               <policy ref="policySet-Level3" />
+            </policy-set>
+
+            <policy-set name="policySet-Level3">
+               <policy ref="queue-federation-4" />
+               <policy ref="address-federation-4" />
+            </policy-set>
+
+            <queue-policy name="queue-federation-4" transformer-ref="federation-transformer-4" >
+               <exclude queue-match="the_queue" address-match="#" />
+            </queue-policy>
+            <address-policy name="address-federation-4" transformer-ref="federation-transformer-4" >
+               <include address-match="the_address" />
+            </address-policy>
+
+         </amqp-federation>
+      </federations>
+   </core>
+</configuration>

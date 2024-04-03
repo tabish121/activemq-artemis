@@ -118,6 +118,11 @@ public class AMQPBrokerConnectConfiguration extends BrokerConnectConfiguration {
       this.transportConfigurations = parser.newObject(transportURI, getName());
    }
 
+   public AMQPBrokerConnectConfiguration setTransportConfigurations(List<TransportConfiguration> configurations) {
+      this.transportConfigurations = configurations;
+      return this;
+   }
+
    public List<TransportConfiguration> getTransportConfigurations() throws Exception {
       if (transportConfigurations == null) {
          parseURI();
