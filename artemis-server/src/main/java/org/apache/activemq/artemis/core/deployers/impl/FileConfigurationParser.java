@@ -63,6 +63,8 @@ import org.apache.activemq.artemis.core.config.amqpBrokerConnectivity.AMQPFedera
 import org.apache.activemq.artemis.core.config.amqpBrokerConnectivity.AMQPFederationAddressPolicyElement;
 import org.apache.activemq.artemis.core.config.amqpBrokerConnectivity.AMQPFederationQueuePolicyElement;
 import org.apache.activemq.artemis.core.config.amqpBrokerConnectivity.AMQPMirrorBrokerConnectionElement;
+import org.apache.activemq.artemis.core.config.amqpBrokerConnectivity.AMQPReceiverBrokerConnectionElement;
+import org.apache.activemq.artemis.core.config.amqpBrokerConnectivity.AMQPSenderBrokerConnectionElement;
 import org.apache.activemq.artemis.core.config.federation.FederationAddressPolicyConfiguration;
 import org.apache.activemq.artemis.core.config.federation.FederationDownstreamConfiguration;
 import org.apache.activemq.artemis.core.config.federation.FederationPolicySet;
@@ -2240,6 +2242,34 @@ public final class FileConfigurationParser extends XMLConfigurationUtil {
 
                connectionElement = amqpFederationConnectionElement;
                connectionElement.setType(AMQPBrokerConnectionAddressType.FEDERATION);
+            } else if (nodeType == AMQPBrokerConnectionAddressType.SENDER) {
+               final String match = getAttributeValue(e2, "address-match");
+               final String queue = getAttributeValue(e2, "queue-name");
+               final String targetAddressPrefix = getAttributeValue(e2, "remote-address-prefix");
+               final String targetCapabilities = getAttributeValue(e2, "remote-terminus-capabilities");
+
+               final AMQPSenderBrokerConnectionElement amqpSenderConnectionElement = new AMQPSenderBrokerConnectionElement(name);
+
+               amqpSenderConnectionElement.setMatchAddress(SimpleString.of(match)).setType(nodeType);
+               amqpSenderConnectionElement.setQueueName(SimpleString.of(queue));
+               amqpSenderConnectionElement.setTargetAddressPrefix(targetAddressPrefix);
+               amqpSenderConnectionElement.setTargetCapabilities(targetCapabilities);
+
+               connectionElement = amqpSenderConnectionElement;
+            } else if (nodeType == AMQPBrokerConnectionAddressType.RECEIVER) {
+               final String match = getAttributeValue(e2, "address-match");
+               final String queue = getAttributeValue(e2, "queue-name");
+               final String sourceAddressPrefix = getAttributeValue(e2, "remote-address-prefix");
+               final String sourceCapabilities = getAttributeValue(e2, "remote-termius-capabilities");
+
+               final AMQPReceiverBrokerConnectionElement amqpReceiverConnectionElement = new AMQPReceiverBrokerConnectionElement(name);
+
+               amqpReceiverConnectionElement.setMatchAddress(SimpleString.of(match)).setType(nodeType);
+               amqpReceiverConnectionElement.setQueueName(SimpleString.of(queue));
+               amqpReceiverConnectionElement.setSourceAddressPrefix(sourceAddressPrefix);
+               amqpReceiverConnectionElement.setSourceCapabilities(sourceCapabilities);
+
+               connectionElement = amqpReceiverConnectionElement;
             } else {
                String match = getAttributeValue(e2, "address-match");
                String queue = getAttributeValue(e2, "queue-name");

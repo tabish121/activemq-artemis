@@ -2151,8 +2151,8 @@
    <xsd:complexType name="amqp-connectionUriType">
       <xsd:sequence>
          <xsd:choice maxOccurs="unbounded">
-            <xsd:element name="sender" type="amqp-address-match-type"/>
-            <xsd:element name="receiver" type="amqp-address-match-type"/>
+            <xsd:element name="sender" type="amqp-broker-connect-link-type"/>
+            <xsd:element name="receiver" type="amqp-broker-connect-link-type"/>
             <xsd:element name="peer" type="amqp-address-match-type"/>
             <xsd:element name="mirror" type="amqp-mirror-type"/>
             <xsd:element name="federation" type="amqp-federation-type"/>
@@ -2226,6 +2226,34 @@
             </xsd:documentation>
          </xsd:annotation>
       </xsd:attribute>
+   </xsd:complexType>
+
+   <xsd:complexType name="amqp-broker-connect-link-type">
+      <xsd:complexContent>
+         <xsd:extension base="amqp-address-match-type">
+            <xsd:attribute name="remote-address-prefix" type="xsd:string" use="optional">
+               <xsd:annotation>
+                  <xsd:documentation>
+                     The prefix to prepend to address that is set on the AMQP receiver or sender link
+                     when creating the remote terminus source or target. This is a change from the default
+                     behavior which adds no prefix to the remote terminus address and is intended for cases
+                     where the sender or receiver is connecting to an AMQP peer that requires a prefix on
+                     the address to determine the type of destination to map the address to.
+                  </xsd:documentation>
+               </xsd:annotation>
+            </xsd:attribute>
+            <xsd:attribute name="remote-termius-capabilities" type="xsd:string" use="optional">
+               <xsd:annotation>
+                  <xsd:documentation>
+                     This comma separated list of capabilities assigned to the AMQP Sender or receiver
+                     link terminus capabilities. By default the capabilities are not populated, this option
+                     allows for adding identifying capabilities the remote peer might use when mapping the
+                     address to a local terminus.
+                  </xsd:documentation>
+               </xsd:annotation>
+            </xsd:attribute>
+         </xsd:extension>
+      </xsd:complexContent>
    </xsd:complexType>
 
    <xsd:complexType name="amqp-mirror-type">

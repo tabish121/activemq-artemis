@@ -92,8 +92,7 @@ public class AMQPBrokerConnectConfiguration extends BrokerConnectConfiguration {
       return connectionElements;
    }
 
-   public AMQPBrokerConnectConfiguration addSender(AMQPBrokerConnectionElement element) {
-      element.setType(AMQPBrokerConnectionAddressType.SENDER);
+   public AMQPBrokerConnectConfiguration addSender(AMQPSenderBrokerConnectionElement element) {
       return addElement(element);
    }
 
@@ -101,15 +100,13 @@ public class AMQPBrokerConnectConfiguration extends BrokerConnectConfiguration {
       return connectionElements;
    }
 
-   public AMQPBrokerConnectConfiguration addReceiver(AMQPBrokerConnectionElement element) {
-      element.setType(AMQPBrokerConnectionAddressType.RECEIVER);
+   public AMQPBrokerConnectConfiguration addReceiver(AMQPReceiverBrokerConnectionElement element) {
       return addElement(element);
    }
 
    public List<AMQPBrokerConnectionElement> getReceivers() {
       return connectionElements;
    }
-
 
    @Override
    public void parseURI() throws Exception {
