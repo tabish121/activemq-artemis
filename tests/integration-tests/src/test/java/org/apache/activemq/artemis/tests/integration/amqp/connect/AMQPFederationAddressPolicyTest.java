@@ -2308,6 +2308,7 @@ public class AMQPFederationAddressPolicyTest extends AmqpClientTestSupport {
       }
    }
 
+   // TODO : Decide on Core and add these tests if tunneling is supported
    @Test
    @Timeout(20)
    public void testCoreMessageConvertedToAMQPWhenTunnelingDisabled() throws Exception {
@@ -2472,6 +2473,8 @@ public class AMQPFederationAddressPolicyTest extends AmqpClientTestSupport {
          server.stop();
       }
    }
+
+   //TODO : see above
 
    @Test
    @Timeout(20)
