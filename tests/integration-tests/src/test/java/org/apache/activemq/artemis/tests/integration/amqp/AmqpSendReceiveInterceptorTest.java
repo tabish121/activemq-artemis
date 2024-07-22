@@ -23,9 +23,12 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 import org.apache.activemq.artemis.api.core.ActiveMQException;
+import org.apache.activemq.artemis.api.core.SimpleString;
+import org.apache.activemq.artemis.core.server.Queue;
 import org.apache.activemq.artemis.protocol.amqp.broker.AMQPMessage;
 import org.apache.activemq.artemis.protocol.amqp.broker.AmqpInterceptor;
 import org.apache.activemq.artemis.spi.core.protocol.RemotingConnection;
+import org.apache.activemq.artemis.tests.util.Wait;
 import org.apache.activemq.transport.amqp.client.AmqpClient;
 import org.apache.activemq.transport.amqp.client.AmqpConnection;
 import org.apache.activemq.transport.amqp.client.AmqpMessage;
@@ -36,16 +39,24 @@ import org.apache.qpid.proton.amqp.messaging.Header;
 import org.apache.qpid.proton.amqp.messaging.Properties;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
+import java.lang.invoke.MethodHandles;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Test basic send and receive scenarios using only AMQP sender and receiver links.
  */
 public class AmqpSendReceiveInterceptorTest extends AmqpClientTestSupport {
+
+   private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
    @Test
    @Timeout(60)
@@ -297,6 +308,81 @@ public class AmqpSendReceiveInterceptorTest extends AmqpClientTestSupport {
       assertNotNull(amqpMessage);
       assertEquals(latch2.getCount(), 0);
       assertTrue(passed[0], "connection not set");
+      sender.close();
+      receiver.close();
+      connection.close();
+   }
+
+   @Test
+   @Timeout(60)
+   public void testDeliveringSizeAfterOutgoingReencode() throws Exception {
+      final AtomicInteger count = new AtomicInteger();
+      final AmqpClient client = createAmqpClient();
+      final AmqpConnection connection = addConnection(client.connect());
+      final AmqpSession session = connection.createSession();
+      final AmqpSender sender = session.createSender(getTestName());
+      final Queue queueView = getProxyToQueue(getQueueName());
+
+      final int messageCount = 1;
+
+      for (int i = 0; i < messageCount; ++i) {
+         final AmqpMessage message = new AmqpMessage();
+
+         message.setMessageId("msg" + 1);
+         message.setText("Test-Message");
+         message.setMessageAnnotation("count", "" + i);
+         message.setMessageAnnotation("to-remove", "this is going to be removed");
+
+         sender.send(message);
+      }
+
+      server.getRemotingService().addOutgoingInterceptor(new AmqpInterceptor() {
+         @Override
+         public boolean intercept(AMQPMessage message, RemotingConnection connection) throws ActiveMQException {
+            message.setAnnotation(SimpleString.of("to-add"), "message annotation added by intercepter");
+            message.reencode();
+
+            count.incrementAndGet();
+
+            return true;
+         }
+      });
+
+      final AmqpReceiver receiver = session.createReceiver(getTestName());
+
+      receiver.flow(messageCount);
+
+      final List<AmqpMessage> received = new ArrayList<>();
+
+      for (int i = 0; i < messageCount; ++i) {
+         final AmqpMessage amqpMessage = receiver.receive(5, TimeUnit.SECONDS);
+
+         assertNotNull(amqpMessage);
+         assertNotNull(amqpMessage.getMessageAnnotation("to-add"));
+
+         received.add(amqpMessage);
+      }
+
+      assertEquals(messageCount, received.size());
+      assertEquals(messageCount, count.get());
+      assertEquals(messageCount, queueView.getDeliveringCount());
+
+      assertTrue(queueView.getDeliveringSize() > 0);
+
+      logger.info("Queue {} has a delivering count of: {}", getTestName(), queueView.getDeliveringSize());
+
+      received.forEach(message -> {
+         try {
+            message.accept();
+         } catch (Exception e) {
+         }
+      });
+
+      Wait.assertEquals(0, () -> queueView.getDeliveringCount(), 5000, 10);
+
+      logger.info("Queue {} has a delivering count of: {}", getTestName(), queueView.getDeliveringSize());
+      assertTrue(queueView.getDeliveringSize() == 0);
+
       sender.close();
       receiver.close();
       connection.close();

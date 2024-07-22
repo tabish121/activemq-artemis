@@ -33,6 +33,8 @@ import java.io.ByteArrayOutputStream;
 import java.io.ObjectInputStream;
 import java.io.ObjectOutputStream;
 import java.lang.invoke.MethodHandles;
+import java.util.ArrayList;
+import java.util.List;
 
 import org.apache.activemq.artemis.api.core.ActiveMQException;
 import org.apache.activemq.artemis.api.core.ActiveMQExceptionType;
@@ -58,12 +60,14 @@ import org.apache.activemq.artemis.core.protocol.core.impl.wireformat.SessionCre
 import org.apache.activemq.artemis.core.protocol.core.impl.wireformat.SessionReceiveMessage;
 import org.apache.activemq.artemis.core.protocol.core.impl.wireformat.SessionSendMessage;
 import org.apache.activemq.artemis.core.server.ActiveMQServer;
+import org.apache.activemq.artemis.core.server.Queue;
 import org.apache.activemq.artemis.api.core.RoutingType;
 
 import org.apache.activemq.artemis.jms.client.ActiveMQConnectionFactory;
 import org.apache.activemq.artemis.spi.core.protocol.RemotingConnection;
 import org.apache.activemq.artemis.spi.core.security.ActiveMQJAASSecurityManager;
 import org.apache.activemq.artemis.tests.util.ActiveMQTestBase;
+import org.apache.activemq.artemis.tests.util.Wait;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
@@ -1024,6 +1028,89 @@ public class InterceptorTest extends ActiveMQTestBase {
       }
 
       session.close();
+   }
+
+   @Test
+   public void testDeliverySizeAfterIntercepter() throws Exception {
+      server.getRemotingService().addOutgoingInterceptor(new Interceptor() {
+         @Override
+         public boolean intercept(final Packet packet, final RemotingConnection connection) throws ActiveMQException {
+            if (packet.getType() == PacketImpl.SESS_RECEIVE_MSG) {
+               final SessionReceiveMessage p = (SessionReceiveMessage) packet;
+               final Message message = p.getMessage();
+
+               message.putStringProperty(SimpleString.of("to-add"), "message annotation added by intercepter");
+            }
+
+            return true;
+         }
+      });
+
+      final ClientSessionFactory sf = createSessionFactory(locator);
+      final ClientSession session = sf.createSession(false, false, false, false);
+
+      session.createQueue(QueueConfiguration.of(QUEUE).setDurable(false));
+
+      final Queue queueView = getProxyToQueue(QUEUE.toString());
+      final ClientProducer producer = session.createProducer(QUEUE);
+
+      final int numMessages = 1;
+
+      for (int i = 0; i < numMessages; i++) {
+         ClientMessage message = session.createMessage(false);
+
+         message.putIntProperty("count", i);
+         message.putStringProperty(InterceptorTest.key, "apple");
+
+         producer.send(message);
+      }
+
+      session.commit();
+
+
+      final ClientConsumer consumer = session.createConsumer(QUEUE);
+
+      session.start();
+
+      final List<ClientMessage> received = new ArrayList<>();
+
+      for (int i = 0; i < numMessages; i++) {
+         ClientMessage message = consumer.receive(1000);
+
+         assertNotNull(message);
+         assertEquals(i, message.getIntProperty("count").intValue());
+         assertEquals("apple", message.getStringProperty(InterceptorTest.key));
+         assertNotNull(message.getStringProperty("to-add"));
+
+         received.add(message);
+      }
+
+      assertEquals(numMessages, received.size());
+      assertEquals(numMessages, queueView.getDeliveringCount());
+
+      assertTrue(queueView.getDeliveringSize() > 0);
+
+      logger.info("Queue {} has a delivering size of: {}", QUEUE, queueView.getDeliveringSize());
+
+      received.forEach(message -> {
+         try {
+            message.acknowledge();
+         } catch (Exception e) {
+         }
+      });
+
+      session.commit();
+
+      Wait.assertEquals(0, () -> queueView.getDeliveringCount(), 5000, 10);
+
+      logger.info("Queue {} has a delivering size of: {}", QUEUE, queueView.getDeliveringSize());
+      assertTrue(queueView.getDeliveringSize() == 0);
+
+      session.close();
+   }
+
+   public Queue getProxyToQueue(String queueName) {
+      return server.locateQueue(SimpleString.of(queueName));
    }
 
    @Test
