@@ -1055,6 +1055,7 @@ public class ConfigurationImplTest extends AbstractConfigurationTestBase {
       properties.put("AMQPConnections.brokerA.peers.c.type", AMQPBrokerConnectionAddressType.PEER.toString());
       properties.put("AMQPConnections.brokerA.senders.d.type", AMQPBrokerConnectionAddressType.SENDER.toString());
       properties.put("AMQPConnections.brokerA.receivers.e.type", AMQPBrokerConnectionAddressType.RECEIVER.toString());
+      properties.put("AMQPConnections.brokerA.bridges.f.type", AMQPBrokerConnectionAddressType.BRIDGE.toString());
 
       configuration.parsePrefixedProperties(properties, null);
 
