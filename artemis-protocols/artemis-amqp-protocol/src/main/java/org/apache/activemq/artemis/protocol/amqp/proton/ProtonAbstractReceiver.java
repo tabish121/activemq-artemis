@@ -365,6 +365,7 @@ public abstract class ProtonAbstractReceiver extends ProtonInitializable impleme
 
    @Override
    public void close(boolean remoteLinkClose) throws ActiveMQAMQPException {
+      System.out.println("Proton Abstract Receiver close called for: " + receiver.getName());
       protonSession.removeReceiver(receiver);
       closeCurrentReader();
    }

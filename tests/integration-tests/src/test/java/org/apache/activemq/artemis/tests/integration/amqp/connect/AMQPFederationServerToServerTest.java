@@ -22,10 +22,14 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
-
 import java.lang.invoke.MethodHandles;
 import java.util.Arrays;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.jms.BytesMessage;
 import javax.jms.Connection;
@@ -39,6 +43,7 @@ import javax.jms.Session;
 import javax.jms.TextMessage;
 import javax.jms.Topic;
 
+import org.apache.activemq.artemis.api.core.JsonUtil;
 import org.apache.activemq.artemis.api.core.QueueConfiguration;
 import org.apache.activemq.artemis.api.core.RoutingType;
 import org.apache.activemq.artemis.api.core.SimpleString;
@@ -50,6 +55,7 @@ import org.apache.activemq.artemis.core.config.amqpBrokerConnectivity.AMQPFedera
 import org.apache.activemq.artemis.core.server.ActiveMQServer;
 import org.apache.activemq.artemis.core.server.ComponentConfigurationRoutingType;
 import org.apache.activemq.artemis.core.server.impl.AddressInfo;
+import org.apache.activemq.artemis.json.JsonValue;
 import org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport;
 import org.apache.activemq.artemis.tests.integration.amqp.AmqpClientTestSupport;
 import org.apache.activemq.artemis.tests.util.CFUtil;
@@ -1383,5 +1389,112 @@ public class AMQPFederationServerToServerTest extends AmqpClientTestSupport {
          assertNull(consumerR.receiveNoWait());
       }
    }
-}
 
+   @Test
+   @Timeout(60)
+   public void testFederationConsumersCleanupOnConnectionDrop() throws Exception {
+      final String queueName = "test";
+      final int messageCount = 1;
+      logger.info("Test started: {}", getTestName());
+
+      final AMQPFederationQueuePolicyElement queuePolicy = new AMQPFederationQueuePolicyElement();
+      queuePolicy.setName("queue-test-policy");
+      queuePolicy.addToIncludes("#", "#");
+      queuePolicy.setPriorityAdjustment(-5);
+      queuePolicy.setIncludeFederated(false);
+
+      final AMQPFederatedBrokerConnectionElement remoteServerFederation = new AMQPFederatedBrokerConnectionElement();
+      remoteServerFederation.setName(getTestName() + ":remote-server");
+      remoteServerFederation.addLocalQueuePolicy(queuePolicy);
+      remoteServerFederation.addRemoteQueuePolicy(queuePolicy);
+
+      final AMQPBrokerConnectConfiguration amqpConnection =
+         new AMQPBrokerConnectConfiguration(getTestName() + ":remote-server", "tcp://localhost:" + SERVER_PORT);
+      amqpConnection.setReconnectAttempts(0);// Limit reconnects
+      amqpConnection.addFederation(remoteServerFederation);
+      amqpConnection.setRetryInterval(1000);
+
+      server.start();
+      server.createQueue(QueueConfiguration.of(queueName).setRoutingType(RoutingType.ANYCAST));
+
+      remoteServer.getConfiguration().addAMQPConnection(amqpConnection).setName("Remote");
+      remoteServer.start();
+      remoteServer.createQueue(QueueConfiguration.of(queueName).setRoutingType(RoutingType.ANYCAST));
+
+      final ConnectionFactory factoryLocal = CFUtil.createConnectionFactory("AMQP", "tcp://localhost:" + SERVER_PORT);
+      final ConnectionFactory factoryRemote = CFUtil.createConnectionFactory("AMQP", "tcp://localhost:" + SERVER_PORT_REMOTE);
+
+      ExecutorService executorService = Executors.newCachedThreadPool();
+      AtomicInteger count = new AtomicInteger(0);
+      AtomicBoolean run = new AtomicBoolean(true);
+
+      runAfter(executorService::shutdownNow);
+
+      executorService.submit(() -> {
+         while (run.get() && count.get() < messageCount) {
+            try (Connection connection = factoryRemote.createConnection()) {
+               connection.start();
+
+               Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE);
+               Queue queue = session.createQueue(queueName);
+               MessageConsumer consumer = session.createConsumer(queue);
+
+               while (run.get()) {
+                  if (consumer.receive(20_000) != null) {
+                     count.incrementAndGet();
+                  }
+               }
+            } catch (Exception ignore) { }
+
+            try {
+               Thread.sleep(10);
+            } catch (InterruptedException e) {
+            }
+         }
+      });
+
+      try (Connection connection = factoryLocal.createConnection();
+           Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE)) {
+
+         Queue queue = session.createQueue(queueName);
+         MessageProducer producer = session.createProducer(queue);
+
+         producer.send(session.createTextMessage("msg"));
+         Wait.assertTrue(() -> remoteServer.locateQueue(queueName).getMessagesAcknowledged() == 1L);
+         count.set(0);
+
+         // Simulate intermittent network failure
+         System.out.println("Force closing federation connection from remote: " + remoteServer.getNodeID() +
+                            " to local server: " + server.getNodeID());
+         remoteServer.getActiveMQServerControl().closeConsumerConnectionsForAddress(queueName);
+
+         for (int i = 0; i < messageCount; i++) {
+            producer.send(session.createTextMessage("msg"));
+         }
+
+         Wait.assertTrue(() -> count.get() >= messageCount);
+         try {
+            Wait.assertFalse(() -> {
+               final String localConsumersJSON = server.getActiveMQServerControl().listAllConsumersAsJSON();
+
+               for (JsonValue value : JsonUtil.readJsonArray(localConsumersJSON)) {
+                 if (value.asJsonObject().getString("status").equals("Orphaned")) {
+                    System.out.println("Orphaned: " + value);
+                    return true;
+                 }
+               }
+
+               return false;
+            }, 5_000, 1000);
+         } finally {
+            run.set(false);
+            executorService.shutdown();
+            remoteServer.stop();
+            System.out.println("Remote server has been shut down");
+            server.stop();
+            System.out.println("Local server has been shut down");
+            assertTrue(executorService.awaitTermination(5000, TimeUnit.MILLISECONDS));
+         }
+      }
+   }
+}

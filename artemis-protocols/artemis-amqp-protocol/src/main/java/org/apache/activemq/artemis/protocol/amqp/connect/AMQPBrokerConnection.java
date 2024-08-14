@@ -975,12 +975,14 @@ public class AMQPBrokerConnection implements ClientConnectionLifeCycleListener, 
 
    @Override
    public void connectionDestroyed(Object connectionID, boolean failed) {
+      System.out.println(server.getNodeID() + " ANQP Broker connection destroyed: " + getName());
       server.getRemotingService().removeConnection(connectionID);
       redoConnection();
    }
 
    @Override
    public void connectionException(Object connectionID, ActiveMQException me) {
+      System.out.println(server.getNodeID() + " ANQP Broker connection exception: " + getName());
       redoConnection();
    }
 

@@ -154,9 +154,12 @@ public class AMQPFederationEventDispatcher implements SenderController, ActiveMQ
       // Make a best effort to remove the temporary queue used for event messages on close.
       server.unRegisterBrokerPlugin(this);
 
+      System.out.println(server.getNodeID() + ": Removing event dispatcher temporary queue: " + getEventsLinkAddress());
+
       try {
          session.removeTemporaryQueue(SimpleString.of(getEventsLinkAddress()));
       } catch (Exception e) {
+         logger.warn("Failed removing events link temporary queue: {} : {}", getEventsLinkAddress(), e.getMessage());
          // Ignored as the temporary queue should be removed on connection termination.
       }
    }
