@@ -27,6 +27,7 @@ import java.net.URI;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 import javax.jms.Connection;
@@ -39,14 +40,21 @@ import javax.jms.Session;
 import javax.jms.TextMessage;
 import javax.jms.Topic;
 
+import org.apache.activemq.artemis.api.core.ActiveMQException;
+import org.apache.activemq.artemis.api.core.Interceptor;
+import org.apache.activemq.artemis.api.core.Message;
 import org.apache.activemq.artemis.api.core.QueueConfiguration;
 import org.apache.activemq.artemis.core.config.amqpBrokerConnectivity.AMQPBrokerConnectConfiguration;
 import org.apache.activemq.artemis.core.config.amqpBrokerConnectivity.AMQPMirrorBrokerConnectionElement;
+import org.apache.activemq.artemis.core.protocol.core.Packet;
+import org.apache.activemq.artemis.core.protocol.core.impl.PacketImpl;
+import org.apache.activemq.artemis.core.protocol.core.impl.wireformat.SessionSendMessage;
 import org.apache.activemq.artemis.core.server.ActiveMQServer;
 import org.apache.activemq.artemis.core.server.impl.AddressInfo;
 import org.apache.activemq.artemis.protocol.amqp.broker.ProtonProtocolManagerFactory;
 import org.apache.activemq.artemis.protocol.amqp.connect.mirror.AMQPMirrorControllerSource;
 import org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport;
+import org.apache.activemq.artemis.spi.core.protocol.RemotingConnection;
 import org.apache.activemq.artemis.tests.integration.amqp.AmqpClientTestSupport;
 import org.apache.activemq.artemis.tests.util.CFUtil;
 import org.apache.qpid.protonj2.test.driver.ProtonTestServer;
@@ -707,6 +715,101 @@ public class AMQPMirrorConnectionTest extends AmqpClientTestSupport {
          }
 
          server.stop();
+      }
+   }
+
+   @Test
+   @Timeout(20)
+   public void testMirrorOfTunnledCoreMessageWithCoreInterceptorAlteringMessage() throws Exception {
+      final Map<String, Object> brokerProperties = new HashMap<>();
+      brokerProperties.put(AMQPMirrorControllerSource.BROKER_ID.toString(), "Test-Broker");
+
+      try (ProtonTestServer peer = new ProtonTestServer()) {
+         peer.expectSASLPlainConnect("user", "pass", "PLAIN", "ANONYMOUS");
+         peer.expectOpen().respond();
+         peer.expectBegin().respond();
+         peer.expectAttach().ofSender()
+                            .withName(Matchers.startsWith("$ACTIVEMQ_ARTEMIS_MIRROR"))
+                            .withDesiredCapabilities("amq.mirror", AmqpSupport.CORE_MESSAGE_TUNNELING_SUPPORT.toString())
+                            .respond()
+                            .withOfferedCapabilities("amq.mirror", AmqpSupport.CORE_MESSAGE_TUNNELING_SUPPORT.toString())
+                            .withPropertiesMap(brokerProperties);
+         peer.remoteFlow().withLinkCredit(10).queue();
+         peer.expectTransfer().accept(); // Notification address create
+         peer.expectTransfer().accept(); // Address create
+         peer.expectTransfer().accept(); // Queue create
+         peer.start();
+
+         final URI remoteURI = peer.getServerURI();
+         logger.info("Connect test started, peer listening on: {}", remoteURI);
+
+         AMQPMirrorBrokerConnectionElement mirror = new AMQPMirrorBrokerConnectionElement();
+         mirror.setQueueCreation(true);
+         mirror.setDurable(true);
+         mirror.setName("test");
+
+         AMQPBrokerConnectConfiguration amqpConnection =
+            new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
+         amqpConnection.setReconnectAttempts(0);// No reconnects
+         amqpConnection.setUser("user");
+         amqpConnection.setPassword("pass");
+         amqpConnection.addElement(mirror);
+
+         server.getConfiguration().addAMQPConnection(amqpConnection);
+         server.start();
+         server.getRemotingService().addIncomingInterceptor(new IncomingMessageInterceptor(20));
+
+         final ConnectionFactory factory = CFUtil.createConnectionFactory("CORE", "tcp://localhost:" + BROKER_PORT_NUM);
+
+         try (Connection connection = factory.createConnection()) {
+            Session session = connection.createSession(false, Session.AUTO_ACKNOWLEDGE);
+            Queue queue = session.createQueue("myQueue");
+            MessageConsumer consumer = session.createConsumer(queue);
+            MessageProducer producer = session.createProducer(queue);
+            TextMessage message = session.createTextMessage("test");
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectTransfer().withMessageFormat(AMQP_TUNNELED_CORE_MESSAGE_FORMAT).accept(); // Mirrored Producer Message
+            peer.expectTransfer().withMessageFormat(0).accept(); // Mirrored Consumer ACK
+
+            producer.setDeliveryMode(DeliveryMode.PERSISTENT);
+            producer.send(message);
+
+            connection.start();
+
+            assertNotNull(consumer.receive(1_000));
+
+            peer.waitForScriptToComplete();
+
+            consumer.close();
+         }
+
+         server.stop();
+      }
+   }
+
+   private class IncomingMessageInterceptor implements Interceptor {
+
+      private final String PROPERTY_PREFIX = "new-property-";
+
+      private int numProperties;
+
+      IncomingMessageInterceptor(int numProperties) {
+         this.numProperties = numProperties;
+      }
+
+      @Override
+      public boolean intercept(final Packet packet, final RemotingConnection connection) throws ActiveMQException {
+         if (packet.getType() == PacketImpl.SESS_SEND) {
+            final SessionSendMessage sessionMessage = (SessionSendMessage) packet;
+            final Message message = (Message) sessionMessage.getMessage();
+
+            for (int i = 1; i <= numProperties; ++i) {
+               message.putStringProperty(PROPERTY_PREFIX + i, UUID.randomUUID().toString());
+            }
+         }
+
+         return true;
       }
    }
 }

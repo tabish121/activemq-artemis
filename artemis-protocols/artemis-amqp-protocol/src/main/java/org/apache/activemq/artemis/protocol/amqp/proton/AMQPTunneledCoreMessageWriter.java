@@ -73,7 +73,8 @@ public class AMQPTunneledCoreMessageWriter implements MessageWriter {
       try {
          final ICoreMessage message = (ICoreMessage) messageReference.getMessage();
          final int encodedSize = message.getPersistSize();
-         final ByteBuf buffer = Unpooled.buffer(encodedSize + DATA_SECTION_ENCODING_BYTES); // Account for the data section
+         final int dataEncodingSize = encodedSize + DATA_SECTION_ENCODING_BYTES;
+         final ByteBuf buffer = Unpooled.buffer(dataEncodingSize); // Account for the data section
          final Delivery delivery = serverSender.createDelivery(messageReference, AMQP_TUNNELED_CORE_MESSAGE_FORMAT);
 
          final DeliveryAnnotations annotations = messageReference.getProtocolData(DeliveryAnnotations.class);
@@ -86,6 +87,10 @@ public class AMQPTunneledCoreMessageWriter implements MessageWriter {
             } finally {
                encoder.setByteBuffer((WritableBuffer) null);
             }
+
+            // Right size the buffer for the expected core encoding now that delivery annotations
+            // have been added to the previously created buffer.
+            buffer.ensureWritable(dataEncodingSize);
          }
 
          // This encoding would work up to a Core message that encodes to but does not exceed
