@@ -64,6 +64,9 @@ public class AMQPLargeMessage extends AMQPMessage implements LargeServerMessage 
          if (this.getExpiration() > 0) {
             standardMessage.reloadExpiration(this.getExpiration());
          }
+         if (getPriority() != DEFAULT_MESSAGE_PRIORITY) {
+            standardMessage.reloadPriority(getPriority());
+         }
          standardMessage.setMessageAnnotations(messageAnnotations);
          standardMessage.setMessageID(messageID);
          return standardMessage.toCore();
@@ -265,6 +268,11 @@ public class AMQPLargeMessage extends AMQPMessage implements LargeServerMessage 
             }
          }
 
+         if (header != null && header.getPriority() != null) {
+            if (!priorityReloaded) {
+               priority = (byte) Math.min(header.getPriority().intValue(), MAX_MESSAGE_PRIORITY);
+            }
+         }
 
       } finally {
          TLSEncode.getDecoder().setBuffer(oldBuffer);
@@ -322,7 +330,6 @@ public class AMQPLargeMessage extends AMQPMessage implements LargeServerMessage 
    }
 
    public void parseHeader(ReadableBuffer buffer) {
-
       DecoderImpl decoder = TLSEncode.getDecoder();
       decoder.setBuffer(buffer);
 
@@ -333,6 +340,12 @@ public class AMQPLargeMessage extends AMQPMessage implements LargeServerMessage 
             if (header.getTtl() != null) {
                if (!expirationReload) {
                   expiration = System.currentTimeMillis() + header.getTtl().intValue();
+               }
+            }
+
+            if (header.getPriority() != null) {
+               if (!priorityReloaded) {
+                  priority = (byte) Math.min(header.getPriority().intValue(), MAX_MESSAGE_PRIORITY);
                }
             }
          }
@@ -489,6 +502,7 @@ public class AMQPLargeMessage extends AMQPMessage implements LargeServerMessage 
       newMessage.setParentRef(this);
       newMessage.setFileDurable(this.isDurable());
       newMessage.reloadExpiration(this.expiration);
+      newMessage.reloadPriority(priority);
       return newMessage;
    }
 

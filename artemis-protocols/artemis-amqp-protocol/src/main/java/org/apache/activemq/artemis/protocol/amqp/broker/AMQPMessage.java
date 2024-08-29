@@ -207,6 +207,8 @@ public abstract class AMQPMessage extends RefCountMessage implements org.apache.
    protected volatile int originalEstimate = -1;
    protected long expiration;
    protected boolean expirationReload = false;
+   protected byte priority = DEFAULT_MESSAGE_PRIORITY;
+   protected boolean priorityReloaded = false;
    protected long scheduledTime = -1;
 
    protected boolean isPaged;
@@ -678,6 +680,9 @@ public abstract class AMQPMessage extends RefCountMessage implements org.apache.
       if (!expirationReload) {
          expiration = 0;
       }
+      if (!priorityReloaded) {
+         priority = DEFAULT_MESSAGE_PRIORITY;
+      }
       encodedHeaderSize = 0;
       memoryEstimate = -1;
       originalEstimate = -1;
@@ -708,6 +713,11 @@ public abstract class AMQPMessage extends RefCountMessage implements org.apache.
                header = (Header) constructor.readValue();
                headerPosition = constructorPos;
                encodedHeaderSize = data.position() - constructorPos;
+               if (header.getPriority() != null) {
+                  if (!priorityReloaded) {
+                     priority = (byte) Math.min(header.getPriority().intValue(), MAX_MESSAGE_PRIORITY);
+                  }
+               }
                if (header.getTtl() != null) {
                   if (!expirationReload) {
                      expiration = System.currentTimeMillis() + header.getTtl().longValue();
@@ -1140,6 +1150,18 @@ public abstract class AMQPMessage extends RefCountMessage implements org.apache.
       this.expirationReload = true;
    }
 
+   /**
+    * When loaded from storage this allows the message priority to be recovered
+    * without needing to rescan the full message encoding.
+    *
+    * @param priority
+    *    The original message priority the message arrived with.
+    */
+   public void reloadPriority(byte priority) {
+      this.priority = priority;
+      this.priorityReloaded = true;
+   }
+
    @Override
    public final AMQPMessage setExpiration(long expiration) {
       if (properties != null) {
@@ -1297,11 +1319,11 @@ public abstract class AMQPMessage extends RefCountMessage implements org.apache.
 
    @Override
    public final byte getPriority() {
-      if (header != null && header.getPriority() != null) {
-         return (byte) Math.min(header.getPriority().intValue(), MAX_MESSAGE_PRIORITY);
-      } else {
-         return DEFAULT_MESSAGE_PRIORITY;
+      if (!priorityReloaded) {
+         ensureMessageDataScanned();
       }
+
+      return priority;
    }
 
    @Override

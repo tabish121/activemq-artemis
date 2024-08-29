@@ -57,6 +57,7 @@ public class AmqpPageTest extends PageTest {
       amqpMessage.setFileDurable(true);
       amqpMessage.addBytes(content);
       amqpMessage.reloadExpiration(0);
+      amqpMessage.reloadPriority((byte) 4);
       return amqpMessage;
    }
 

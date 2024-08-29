@@ -246,7 +246,7 @@ public class AMQPStandardMessage extends AMQPMessage {
 
    @Override
    public Persister<org.apache.activemq.artemis.api.core.Message> getPersister() {
-      return AMQPMessagePersisterV3.getInstance();
+      return AMQPMessagePersisterV4.getInstance();
    }
 
    @Override

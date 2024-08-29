@@ -19,6 +19,7 @@ package org.apache.activemq.artemis.tests.integration.amqp;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.activemq.artemis.core.server.Queue;
@@ -41,6 +42,13 @@ import java.lang.invoke.MethodHandles;
 public class AmqpMessagePriorityTest extends AmqpClientTestSupport {
 
    protected static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
+
+   private static final int MIN_LARGE_MESSAGE_SIZE = 16384;
+
+   @Override
+   protected void configureAMQPAcceptorParameters(Map<String, Object> params) {
+      params.put("amqpMinLargeMessageSize", MIN_LARGE_MESSAGE_SIZE);
+   }
 
    @Test
    @Timeout(60)
@@ -247,5 +255,149 @@ public class AmqpMessagePriorityTest extends AmqpClientTestSupport {
       Wait.assertEquals(0L, queueView::getMessageCount, 5000, 10);
 
       connection.close();
+   }
+
+   @Test
+   @Timeout(30)
+   public void testMessagePriorityAppliedAfterServerRestart() throws Exception {
+      doTestMessagePriorityAppliedAfterServerRestart(false);
+   }
+
+   @Test
+   @Timeout(30)
+   public void testLargeMessagePriorityAppliedAfterServerRestart() throws Exception {
+      doTestMessagePriorityAppliedAfterServerRestart(true);
+   }
+
+   public void doTestMessagePriorityAppliedAfterServerRestart(boolean largeMessages) throws Exception {
+      final AmqpClient client = createAmqpClient();
+
+      final int priorityLevels = 10;
+      final int bodySize = largeMessages ? MIN_LARGE_MESSAGE_SIZE + 10 : 10;
+      final String body = "#".repeat(bodySize);
+
+      {
+         final AmqpConnection connection = addConnection(client.connect());
+         final AmqpSession session = connection.createSession();
+         final AmqpSender sender = session.createSender(getQueueName());
+         final Queue queueView = getProxyToQueue(getQueueName());
+
+         for (int priority = 0; priority < priorityLevels; ++priority) {
+            AmqpMessage message = new AmqpMessage();
+            message.setDurable(true);
+            message.setMessageId("MessageID:" + priority);
+            message.setPriority((short) priority);
+            message.setText(body);
+
+            sender.send(message);
+         }
+
+         assertEquals(priorityLevels, queueView.getMessageCount());
+
+         sender.close();
+         connection.close();
+      }
+
+      server.stop();
+      server.start();
+
+      {
+         final Queue queueView = getProxyToQueue(getQueueName());
+         final AmqpConnection connection = addConnection(client.connect());
+         final AmqpSession session = connection.createSession();
+         final AmqpReceiver receiver = session.createReceiver(getQueueName());
+
+         Wait.assertEquals((long)priorityLevels, () -> queueView.getMessageCount(), 2_000, 100);
+
+         receiver.flow(priorityLevels);
+
+         for (int priority = priorityLevels - 1; priority >= 0; --priority) {
+            final AmqpMessage message = receiver.receive(5, TimeUnit.SECONDS);
+
+            assertNotNull(message);
+            assertEquals(priority, message.getPriority());
+            assertEquals("MessageID:" + priority, message.getMessageId());
+
+            logger.info("Read message with priority = {}", message.getPriority());
+
+            message.accept();
+         }
+
+         receiver.close();
+         connection.close();
+
+         assertEquals(0, queueView.getMessageCount());
+      }
+   }
+
+   @Test
+   @Timeout(30)
+   public void testMessagePriorityAppliedWhileInPaging() throws Exception {
+      doTestMessagePriorityAppliedWhileInPaging(false);
+   }
+
+   @Test
+   @Timeout(30)
+   public void testLargeMessagePriorityAppliedWhileInPaging() throws Exception {
+      doTestMessagePriorityAppliedWhileInPaging(true);
+   }
+
+   public void doTestMessagePriorityAppliedWhileInPaging(boolean largeMessages) throws Exception {
+      final AmqpClient client = createAmqpClient();
+
+      final int priorityLevels = 10;
+      final int bodySize = largeMessages ? MIN_LARGE_MESSAGE_SIZE + 10 : 10;
+      final String body = "#".repeat(bodySize);
+      final Queue queueView = server.locateQueue(getQueueName());
+
+      // Force paging for this test
+      queueView.getPagingStore().startPaging();
+
+      {
+         final AmqpConnection connection = addConnection(client.connect());
+         final AmqpSession session = connection.createSession();
+         final AmqpSender sender = session.createSender(getQueueName());
+
+         for (int priority = 0; priority < priorityLevels; ++priority) {
+            AmqpMessage message = new AmqpMessage();
+            message.setDurable(true);
+            message.setMessageId("MessageID:" + priority);
+            message.setPriority((short) priority);
+            message.setText(body);
+
+            sender.send(message);
+         }
+
+         assertEquals(priorityLevels, queueView.getMessageCount());
+
+         sender.close();
+         connection.close();
+      }
+      {
+         final AmqpConnection connection = addConnection(client.connect());
+         final AmqpSession session = connection.createSession();
+         final AmqpReceiver receiver = session.createReceiver(getQueueName());
+
+         Wait.assertEquals((long)priorityLevels, () -> queueView.getMessageCount(), 2_000, 100);
+
+         receiver.flow(priorityLevels);
+
+         for (int priority = priorityLevels - 1; priority >= 0; --priority) {
+            final AmqpMessage message = receiver.receive(5, TimeUnit.SECONDS);
+
+            assertNotNull(message);
+            assertEquals(priority, message.getPriority());
+            assertEquals("MessageID:" + priority, message.getMessageId());
+
+            logger.info("Read message with priority = {}", message.getPriority());
+
+            message.accept();
+         }
+
+         receiver.close();
+         connection.close();
+
+         assertEquals(0, queueView.getMessageCount());
+      }
    }
 }

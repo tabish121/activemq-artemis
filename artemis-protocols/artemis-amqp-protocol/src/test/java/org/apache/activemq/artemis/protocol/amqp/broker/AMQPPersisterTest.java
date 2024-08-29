@@ -88,19 +88,15 @@ public class AMQPPersisterTest {
       return message;
    }
 
-
    @Test
    public void testEncodeSize() throws Exception {
-
       Message message = createMessage(SimpleString.of("Test"), 1, new byte[10]);
 
-      MessagePersister persister = AMQPMessagePersisterV3.getInstance();
+      MessagePersister persister = AMQPMessagePersisterV4.getInstance();
 
       ActiveMQBuffer buffer = ActiveMQBuffers.dynamicBuffer(1024);
       persister.encode(buffer, message);
 
       assertEquals(persister.getEncodeSize(message), buffer.writerIndex());
-
-
    }
 }

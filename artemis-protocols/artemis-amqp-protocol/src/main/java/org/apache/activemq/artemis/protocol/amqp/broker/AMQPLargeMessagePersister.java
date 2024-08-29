@@ -49,16 +49,22 @@ public class AMQPLargeMessagePersister extends MessagePersister {
       super();
    }
 
-
    @Override
    public int getEncodeSize(Message record) {
       AMQPLargeMessage msgEncode = (AMQPLargeMessage) record;
       ByteBuf buf = msgEncode.getSavedEncodeBuffer();
 
       try {
-         int encodeSize = DataConstants.SIZE_BYTE + DataConstants.SIZE_INT + DataConstants.SIZE_LONG + DataConstants.SIZE_LONG + SimpleString.sizeofNullableString(record.getAddressSimpleString()) + DataConstants.SIZE_BOOLEAN + buf.writerIndex() +
-            DataConstants.SIZE_LONG +  // expiredTime
-            DataConstants.SIZE_BOOLEAN; // reencoded
+         final int encodeSize = DataConstants.SIZE_BYTE +
+                                DataConstants.SIZE_INT +
+                                DataConstants.SIZE_LONG +
+                                DataConstants.SIZE_LONG +
+                                SimpleString.sizeofNullableString(record.getAddressSimpleString()) +
+                                DataConstants.SIZE_BOOLEAN +
+                                buf.writerIndex() +
+                                DataConstants.SIZE_LONG +    // expiredTime
+                                DataConstants.SIZE_BOOLEAN + // reencoded
+                                DataConstants.SIZE_BYTE;     // priority
 
          TypedProperties properties = ((AMQPMessage) record).getExtraProperties();
 
@@ -93,6 +99,7 @@ public class AMQPLargeMessagePersister extends MessagePersister {
       buffer.writeBytes(savedEncodeBuffer, 0, savedEncodeBuffer.writerIndex());
       buffer.writeLong(record.getExpiration());
       buffer.writeBoolean(msgEncode.isReencoded());
+      buffer.writeByte(record.getPriority());
       msgEncode.releaseEncodedBufferAfterWrite(); // we need two releases, as getSavedEncodedBuffer will keep 1 for himself until encoding has happened
                                                   // which this is the expected event where we need to release the extra refCounter
    }
@@ -134,7 +141,11 @@ public class AMQPLargeMessagePersister extends MessagePersister {
          largeMessage.setReencoded(reEncoded);
       }
 
+      // Match to the standard V4 persister where priority is stored for use on reload.
+      if (buffer.readable()) {
+         largeMessage.reloadPriority(buffer.readByte());
+      }
+
       return largeMessage;
    }
-
 }

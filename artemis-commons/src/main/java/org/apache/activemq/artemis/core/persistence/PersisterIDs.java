@@ -23,10 +23,9 @@ package org.apache.activemq.artemis.core.persistence;
     The sole purpose of this is to make sure these IDs will not be duplicate
      so we know where to find IDs.
 */
-
 public class PersisterIDs {
 
-   public static final int MAX_PERSISTERS = 5;
+   public static final int MAX_PERSISTERS = 6;
 
    public static final byte CoreLargeMessagePersister_ID = (byte)0;
 
@@ -39,5 +38,7 @@ public class PersisterIDs {
    public static final byte AMQPLargeMessagePersister_ID = (byte)4;
 
    public static final byte AMQPMessagePersisterV3_ID = (byte)5;
+
+   public static final byte AMQPMessagePersisterV4_ID = (byte)6;
 
 }
