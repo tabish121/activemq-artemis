@@ -597,6 +597,8 @@ public abstract class AMQPMessage extends RefCountMessage implements org.apache.
 
    @SuppressWarnings("unchecked")
    protected Map<Symbol, Object> getMessageAnnotationsMap(boolean createIfAbsent) {
+      ensureMessageDataScanned();
+
       Map<Symbol, Object> map = null;
 
       if (messageAnnotations != null) {
@@ -1183,6 +1185,8 @@ public abstract class AMQPMessage extends RefCountMessage implements org.apache.
     * @return the UserID value in the AMQP Properties if one is present.
     */
    public final Object getAMQPUserID() {
+      ensureMessageDataScanned();
+
       if (properties != null && properties.getUserId() != null) {
          Binary binary = properties.getUserId();
          return new String(binary.getArray(), binary.getArrayOffset(), binary.getLength(), StandardCharsets.UTF_8);
@@ -1198,7 +1202,6 @@ public abstract class AMQPMessage extends RefCountMessage implements org.apache.
 
    @Override
    public final Object getDuplicateProperty() {
-
       if (applicationProperties == null && messageDataScanned == MessageDataScanningStatus.SCANNED.code && applicationPropertiesPosition != VALUE_NOT_PRESENT) {
          if (!AMQPMessageSymbolSearch.anyApplicationProperties(getData(), DUPLICATE_ID_NEEDLES, applicationPropertiesPosition)) {
             // no need for duplicate-property
@@ -1279,6 +1282,8 @@ public abstract class AMQPMessage extends RefCountMessage implements org.apache.
 
    @Override
    public final long getTimestamp() {
+      ensureMessageDataScanned();
+
       if (properties != null && properties.getCreationTime() != null) {
          return properties.getCreationTime().getTime();
       } else {
@@ -1315,6 +1320,8 @@ public abstract class AMQPMessage extends RefCountMessage implements org.apache.
 
    @Override
    public final SimpleString getReplyTo() {
+      ensureMessageDataScanned();
+
       if (properties != null) {
          return SimpleString.of(properties.getReplyTo());
       } else {
@@ -1390,6 +1397,7 @@ public abstract class AMQPMessage extends RefCountMessage implements org.apache.
 
    @Override
    public final Object getCorrelationID() {
+      ensureMessageDataScanned();
       return properties != null ? properties.getCorrelationId() : null;
    }
 
@@ -1401,6 +1409,16 @@ public abstract class AMQPMessage extends RefCountMessage implements org.apache.
 
       properties.setCorrelationId(correlationID);
       return this;
+   }
+
+   public final String getSubject() {
+      ensureMessageDataScanned();
+
+      if (properties != null) {
+         return properties.getSubject();
+      } else {
+         return null;
+      }
    }
 
    @Override
@@ -1567,10 +1585,7 @@ public abstract class AMQPMessage extends RefCountMessage implements org.apache.
    public final Object getObjectProperty(String key) {
       switch (key) {
          case MessageUtil.TYPE_HEADER_NAME_STRING:
-            if (properties != null) {
-               return properties.getSubject();
-            }
-            return null;
+            return getSubject();
          case MessageUtil.CONNECTION_ID_PROPERTY_NAME_STRING:
             return getConnectionID();
          case MessageUtil.JMSXGROUPID:
@@ -1580,10 +1595,12 @@ public abstract class AMQPMessage extends RefCountMessage implements org.apache.
          case MessageUtil.JMSXUSERID:
             return getAMQPUserID();
          case MessageUtil.CORRELATIONID_HEADER_NAME_STRING:
-            if (properties != null && properties.getCorrelationId() != null) {
-               return AMQPMessageIdHelper.INSTANCE.toCorrelationIdStringOrBytes(properties.getCorrelationId());
+            final Object correlationID = getCorrelationID();
+            if (correlationID != null) {
+               return AMQPMessageIdHelper.INSTANCE.toCorrelationIdStringOrBytes(correlationID);
+            } else {
+               return null;
             }
-            return null;
          default:
             return getApplicationObjectProperty(key);
       }
