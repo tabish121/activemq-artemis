@@ -195,6 +195,15 @@ public class AMQPBrokerConnection implements ClientConnectionLifeCycleListener, 
    }
 
    @Override
+   public boolean isConnected() {
+      if (connection != null) {
+         return connection.isOpen();
+      } else {
+         return false;
+      }
+   }
+
+   @Override
    public boolean isStarted() {
       return started;
    }

@@ -14,30 +14,24 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.activemq.artemis.core.server;
+package org.apache.activemq.artemis.api.core.management;
 
-import org.apache.activemq.artemis.core.config.brokerConnectivity.BrokerConnectConfiguration;
-
-public interface BrokerConnection extends ActiveMQComponent {
+/**
+ * A BrokerConnectionServiceControl is used to manage a BrokerConnection specific feature
+ * or service that is configured for a given broker connection.
+ */
+public interface BrokerConnectionServiceControl extends ActiveMQComponentControl {
 
    /**
-    * @return the unique name of the broker connection
+    * Returns the service type of this broker connection feature or service being controlled
     */
+   @Attribute(desc = "service type of this broker connection service")
+   String getType();
+
+   /**
+    * Returns a unique name this broker connection feature or service being controlled
+    */
+   @Attribute(desc = "unique name of this broker connection service")
    String getName();
-
-   /**
-    * @return the protocol that underlies the broker connection implementation.
-    */
-   String getProtocol();
-
-   /**
-    * @return <code>true</code> if the broker connection is currently connected to the remote.
-    */
-   boolean isConnected();
-
-   /**
-    * @return the configuration that was used to create this broker connection.
-    */
-   BrokerConnectConfiguration getConfiguration();
 
 }

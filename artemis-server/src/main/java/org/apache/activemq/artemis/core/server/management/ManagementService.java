@@ -27,6 +27,7 @@ import org.apache.activemq.artemis.api.core.RoutingType;
 import org.apache.activemq.artemis.api.core.SimpleString;
 import org.apache.activemq.artemis.api.core.TransportConfiguration;
 import org.apache.activemq.artemis.api.core.management.AddressControl;
+import org.apache.activemq.artemis.api.core.management.BrokerConnectionServiceControl;
 import org.apache.activemq.artemis.api.core.management.ObjectNameBuilder;
 import org.apache.activemq.artemis.core.config.ClusterConnectionConfiguration;
 import org.apache.activemq.artemis.core.config.Configuration;
@@ -41,6 +42,7 @@ import org.apache.activemq.artemis.core.security.SecurityAuth;
 import org.apache.activemq.artemis.core.security.SecurityStore;
 import org.apache.activemq.artemis.core.server.ActiveMQComponent;
 import org.apache.activemq.artemis.core.server.ActiveMQServer;
+import org.apache.activemq.artemis.core.server.BrokerConnection;
 import org.apache.activemq.artemis.core.server.Divert;
 import org.apache.activemq.artemis.core.server.Queue;
 import org.apache.activemq.artemis.core.server.QueueFactory;
@@ -145,4 +147,13 @@ public interface ManagementService extends NotificationService, ActiveMQComponen
    Object getAttribute(String resourceName, String attribute, SecurityAuth auth);
 
    Object invokeOperation(String resourceName, String operation, Object[] params, SecurityAuth auth) throws Exception;
+
+   void registerBrokerConnection(BrokerConnection brokerConnection) throws Exception;
+
+   void unregisterBrokerConnection(String name) throws Exception;
+
+   void registerBrokerConnectionService(String brokerConnection, String catagory, BrokerConnectionServiceControl serviceControl) throws Exception;
+
+   void unregisterBrokerConnectionService(String brokerConnection, String catagory, String name) throws Exception;
+
 }

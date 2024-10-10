@@ -269,6 +269,34 @@ public class AMQPFederationSource extends AMQPFederation {
    }
 
    @Override
+   protected void handleFederationStarted() throws ActiveMQException {
+      // TODO: Convert to a policy specific control type
+
+      try {
+         final AMQPFederationBrokerConnectionServiceControl control =
+            new AMQPFederationBrokerConnectionServiceControl(this, brokerConnection, server.getStorageManager());
+
+         server.getManagementService().registerBrokerConnectionService(getName(), "federation", control);
+      } catch (Exception e) {
+         // TODO Auto-generated catch block
+         e.printStackTrace();
+      }
+
+      super.handleFederationStarted();
+   }
+
+   @Override
+   protected void handleFederationStopped() throws ActiveMQException {
+      // TODO: convert to a policy specific control bean
+      try {
+         server.getManagementService().unregisterBrokerConnectionService(brokerConnection.getName(), "federation", getName());
+      } catch (Exception e) {
+      }
+
+      super.handleFederationStopped();
+   }
+
+   @Override
    protected void signalResourceCreateError(Exception cause) {
       brokerConnection.connectError(cause);
    }
