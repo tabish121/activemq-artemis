@@ -87,6 +87,8 @@ import org.apache.activemq.artemis.api.core.ActiveMQException;
 import org.apache.activemq.artemis.api.core.QueueConfiguration;
 import org.apache.activemq.artemis.api.core.RoutingType;
 import org.apache.activemq.artemis.api.core.SimpleString;
+import org.apache.activemq.artemis.api.core.management.BrokerConnectionControl;
+import org.apache.activemq.artemis.api.core.management.ResourceNames;
 import org.apache.activemq.artemis.core.config.DivertConfiguration;
 import org.apache.activemq.artemis.core.config.TransformerConfiguration;
 import org.apache.activemq.artemis.core.config.WildcardConfiguration;
@@ -101,6 +103,7 @@ import org.apache.activemq.artemis.core.server.impl.AddressInfo;
 import org.apache.activemq.artemis.core.server.transformer.Transformer;
 import org.apache.activemq.artemis.core.settings.impl.AddressSettings;
 import org.apache.activemq.artemis.protocol.amqp.broker.AMQPMessage;
+import org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationAddressPolicyControl;
 import org.apache.activemq.artemis.protocol.amqp.connect.federation.ActiveMQServerAMQPFederationPlugin;
 import org.apache.activemq.artemis.protocol.amqp.federation.Federation;
 import org.apache.activemq.artemis.protocol.amqp.federation.FederationConsumer;
@@ -153,6 +156,84 @@ public class AMQPFederationAddressPolicyTest extends AmqpClientTestSupport {
       // Creates the broker used to make the outgoing connection. The port passed is for
       // that brokers acceptor. The test server connected to by the broker binds to a random port.
       return createServer(AMQP_PORT, false);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testFederationCreatesControlBeanForAddressPolicyManagementSerivce() throws Exception {
+      try (ProtonTestServer peer = new ProtonTestServer()) {
+         peer.expectSASLAnonymousConnect();
+         peer.expectOpen().respond();
+         peer.expectBegin().respond();
+         peer.expectAttach().ofSender()
+                            .withDesiredCapability(FEDERATION_CONTROL_LINK.toString())
+                            .respond()
+                            .withOfferedCapabilities(FEDERATION_CONTROL_LINK.toString());
+         peer.expectAttach().ofReceiver()
+                            .withSenderSettleModeSettled()
+                            .withSource().withDynamic(true)
+                            .and()
+                            .withDesiredCapability(FEDERATION_EVENT_LINK.toString())
+                            .respondInKind()
+                            .withTarget().withAddress("test-dynamic-events");
+         peer.expectFlow().withLinkCredit(10);
+         peer.start();
+
+         final URI remoteURI = peer.getServerURI();
+         logger.info("Test started, peer listening on: {}", remoteURI);
+
+         final AMQPFederationAddressPolicyElement receiveFromAddress = new AMQPFederationAddressPolicyElement();
+         receiveFromAddress.setName("address-policy");
+         receiveFromAddress.addToIncludes("test");
+
+         final AMQPFederatedBrokerConnectionElement element = new AMQPFederatedBrokerConnectionElement();
+         element.setName(getTestName());
+         element.addLocalAddressPolicy(receiveFromAddress);
+
+         final AMQPBrokerConnectConfiguration amqpConnection =
+            new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
+         amqpConnection.setReconnectAttempts(0);// No reconnects
+         amqpConnection.addElement(element);
+
+         server.getConfiguration().addAMQPConnection(amqpConnection);
+         server.start();
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+
+         peer.expectAttach().ofReceiver()
+                            .withDesiredCapability(FEDERATION_ADDRESS_RECEIVER.toString())
+                            .withName(allOf(containsString(getTestName()),
+                                            containsString("test"),
+                                            containsString("address-receiver"),
+                                            containsString(server.getNodeID().toString())))
+                            .respond()
+                            .withOfferedCapabilities(FEDERATION_ADDRESS_RECEIVER.toString());
+         peer.expectFlow().withLinkCredit(1000);
+
+         server.createQueue(QueueConfiguration.of("test").setRoutingType(RoutingType.MULTICAST)
+                                                          .setAddress("test")
+                                                          .setAutoCreated(false));
+
+         Wait.assertTrue(() -> server.queueQuery(SimpleString.of("test")).isExists());
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+
+         final BrokerConnectionControl brokerConnection = (BrokerConnectionControl)
+            server.getManagementService().getResource(ResourceNames.BROKER_CONNECTION + getTestName());
+
+         assertNotNull(brokerConnection);
+         assertTrue(brokerConnection.isConnected());
+
+         final AMQPFederationAddressPolicyControl federationService = (AMQPFederationAddressPolicyControl)
+            server.getManagementService().getResource(ResourceNames.BROKER_CONNECTION_SERVICE + "address-policy");
+
+         assertNotNull(federationService);
+         assertEquals("address-policy", federationService.getName());
+         assertEquals(0, federationService.getMessageCount());
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.close();
+      }
    }
 
    @Test
@@ -236,6 +317,14 @@ public class AMQPFederationAddressPolicyTest extends AmqpClientTestSupport {
          }
 
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+
+
+         final BrokerConnectionControl brokerConnection = (BrokerConnectionControl)
+            server.getManagementService().getResource(ResourceNames.BROKER_CONNECTION + getTestName());
+
+         assertNotNull(brokerConnection);
+         assertTrue(brokerConnection.isConnected());
+
          peer.expectDetach().respond();
 
          // This should trigger the federation consumer to be shutdown as the statically defined queue

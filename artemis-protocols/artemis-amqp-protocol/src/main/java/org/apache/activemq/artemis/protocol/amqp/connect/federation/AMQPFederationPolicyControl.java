@@ -14,30 +14,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.activemq.artemis.core.server;
+package org.apache.activemq.artemis.protocol.amqp.connect.federation;
 
-import org.apache.activemq.artemis.core.config.brokerConnectivity.BrokerConnectConfiguration;
+import org.apache.activemq.artemis.api.core.management.Attribute;
+import org.apache.activemq.artemis.api.core.management.BrokerConnectionServiceControl;
 
-public interface BrokerConnection extends ActiveMQComponent {
-
-   /**
-    * @return the unique name of the broker connection
-    */
-   String getName();
-
-   /**
-    * @return the protocol that underlies the broker connection implementation.
-    */
-   String getProtocol();
+/**
+ * Management service control interface for an AMQPFederation policy manager instance.
+ */
+public interface AMQPFederationPolicyControl extends BrokerConnectionServiceControl {
 
    /**
-    * @return <code>true</code> if the broker connection is currently connected to the remote.
+    * Returns the number of messages this federation policy has federated
     */
-   boolean isConnected();
-
-   /**
-    * @return the configuration that was used to create this broker connection.
-    */
-   BrokerConnectConfiguration getConfiguration();
+   @Attribute(desc = "returns the number of messages this federation policy has federated")
+   long getMessageCount();
 
 }

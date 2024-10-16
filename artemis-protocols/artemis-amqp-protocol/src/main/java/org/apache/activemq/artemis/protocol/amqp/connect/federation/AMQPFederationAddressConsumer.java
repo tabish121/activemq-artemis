@@ -111,6 +111,7 @@ public class AMQPFederationAddressConsumer implements FederationConsumerInternal
    private final AMQPSessionContext session;
    private final Predicate<Link> remoteCloseInterceptor = this::remoteLinkClosedInterceptor;
    private final Transformer transformer;
+   private final Consumer<Message> incomingSpy;
 
    private AMQPFederatedAddressDeliveryReceiver receiver;
    private Receiver protonReceiver;
@@ -119,7 +120,8 @@ public class AMQPFederationAddressConsumer implements FederationConsumerInternal
    private Consumer<FederationConsumerInternal> remoteCloseHandler;
 
    public AMQPFederationAddressConsumer(AMQPFederation federation, AMQPFederationConsumerConfiguration configuration,
-                                        AMQPSessionContext session, FederationConsumerInfo consumerInfo, FederationReceiveFromAddressPolicy policy) {
+                                        AMQPSessionContext session, FederationConsumerInfo consumerInfo,
+                                        FederationReceiveFromAddressPolicy policy, Consumer<Message> incomingSpy) {
       this.federation = federation;
       this.consumerInfo = consumerInfo;
       this.policy = policy;
@@ -132,6 +134,12 @@ public class AMQPFederationAddressConsumer implements FederationConsumerInternal
          this.transformer = federation.getServer().getServiceRegistry().getFederationTransformer(policy.getPolicyName(), transformerConfiguration);
       } else {
          this.transformer = (m) -> m;
+      }
+
+      if (incomingSpy != null) {
+         this.incomingSpy = incomingSpy;
+      } else {
+         this.incomingSpy = (m) -> { };
       }
    }
 
@@ -552,6 +560,8 @@ public class AMQPFederationAddressConsumer implements FederationConsumerInternal
          } catch (Exception e) {
             logger.warn("Inbound delivery for {} encountered an error: {}", consumerInfo, e.getMessage(), e);
             deliveryFailed(delivery, receiver, e);
+         } finally {
+            incomingSpy.accept(message);
          }
       }
    }

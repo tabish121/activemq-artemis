@@ -33,11 +33,11 @@ import org.apache.activemq.artemis.core.server.ActiveMQServer;
 import org.apache.activemq.artemis.core.server.ActiveMQServerLogger;
 import org.apache.activemq.artemis.core.server.Divert;
 import org.apache.activemq.artemis.core.server.Queue;
-import org.apache.activemq.artemis.core.server.federation.Federation;
 import org.apache.activemq.artemis.core.server.impl.AddressInfo;
 import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerAddressPlugin;
 import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerBindingPlugin;
 import org.apache.activemq.artemis.core.transaction.Transaction;
+import org.apache.activemq.artemis.protocol.amqp.federation.Federation;
 import org.apache.activemq.artemis.protocol.amqp.federation.FederationConsumer;
 import org.apache.activemq.artemis.protocol.amqp.federation.FederationConsumerInfo;
 import org.apache.activemq.artemis.protocol.amqp.federation.FederationReceiveFromAddressPolicy;
@@ -79,12 +79,37 @@ public abstract class FederationAddressPolicyManager implements ActiveMQServerBi
    }
 
    /**
+    * @return the configured name of the policy being managed.
+    */
+   public String getPolicyName() {
+      return policy.getPolicyName();
+   }
+
+   /**
+    * @return the {@link FederationInternal} instance that owns this policy manager.
+    */
+   public FederationInternal getFederation() {
+      return federation;
+   }
+
+   /**
+    * @return <code>true</code> if the policy is started at the time this method was called.
+    */
+   public boolean isStarted() {
+      return started;
+   }
+
+   /**
     * Start the address policy manager which will initiate a scan of all broker divert
     * bindings and create and matching remote receivers. Start on a policy manager
     * should only be called after its parent {@link Federation} is started and the
     * federation connection has been established.
     */
    public synchronized void start() {
+      if (!federation.isStarted()) {
+         throw new IllegalStateException("Cannot start a federation policy manager when the federation is stopped.");
+      }
+
       if (!started) {
          started = true;
          handlePolicyManagerStarted(policy);

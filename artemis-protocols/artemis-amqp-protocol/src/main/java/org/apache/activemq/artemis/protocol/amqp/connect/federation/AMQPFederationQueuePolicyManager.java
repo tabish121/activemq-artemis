@@ -20,9 +20,12 @@ package org.apache.activemq.artemis.protocol.amqp.connect.federation;
 import java.lang.invoke.MethodHandles;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 import org.apache.activemq.artemis.api.config.ActiveMQDefaultConfiguration;
 import org.apache.activemq.artemis.api.core.ActiveMQException;
+import org.apache.activemq.artemis.api.core.Message;
 import org.apache.activemq.artemis.core.filter.Filter;
 import org.apache.activemq.artemis.core.server.ActiveMQServerLogger;
 import org.apache.activemq.artemis.core.server.Queue;
@@ -46,6 +49,8 @@ public class AMQPFederationQueuePolicyManager extends FederationQueuePolicyManag
 
    private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
+   protected final AtomicLong messageCount = new AtomicLong();
+   protected final Consumer<Message> messageSpy = (m) -> messageCount.incrementAndGet();
    protected final AMQPFederation federation;
 
    protected volatile AMQPFederationConsumerConfiguration configuration;
@@ -55,6 +60,18 @@ public class AMQPFederationQueuePolicyManager extends FederationQueuePolicyManag
       super(federation, queuePolicy);
 
       this.federation = federation;
+   }
+
+   @Override
+   public AMQPFederation getFederation() {
+      return federation;
+   }
+
+   /**
+    * @return the number of messages that all federation consumer of this policy have received from the remote.
+    */
+   public long getFederatedCount() {
+      return messageCount.get();
    }
 
    @Override
@@ -96,7 +113,7 @@ public class AMQPFederationQueuePolicyManager extends FederationQueuePolicyManag
 
       // Don't initiate anything yet as the caller might need to register error handlers etc
       // before the attach is sent otherwise they could miss the failure case.
-      return new AMQPFederationQueueConsumer(federation, configuration, session, consumerInfo, policy);
+      return new AMQPFederationQueueConsumer(federation, configuration, session, consumerInfo, policy, messageSpy);
    }
 
    @Override

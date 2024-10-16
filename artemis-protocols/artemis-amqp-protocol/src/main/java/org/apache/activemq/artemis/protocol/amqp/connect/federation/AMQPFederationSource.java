@@ -269,6 +269,56 @@ public class AMQPFederationSource extends AMQPFederation {
    }
 
    @Override
+   protected void handleFederationStarted() throws ActiveMQException {
+      addressMatchPolicies.forEach((nname, policy) -> {
+         try {
+            final AMQPFederationAddressPolicyControl control =
+               new AMQPFederationAddressPolicyControl(policy);
+
+            server.getManagementService().registerBrokerConnectionService(brokerConnection.getName(), "federation", control);
+         } catch (Exception e) {
+            logger.warn("Error while attempting to add address policy control to management", e);
+         }
+      });
+
+      queueMatchPolicies.forEach((nname, policy) -> {
+         try {
+            final AMQPFederationQueuePolicyControl control =
+               new AMQPFederationQueuePolicyControl(policy);
+
+            server.getManagementService().registerBrokerConnectionService(brokerConnection.getName(), "federation", control);
+         } catch (Exception e) {
+            logger.warn("Error while attempting to add queue policy control to management", e);
+         }
+      });
+
+      super.handleFederationStarted();
+   }
+
+   @Override
+   protected void handleFederationStopped() throws ActiveMQException {
+      addressMatchPolicies.forEach((nname, policy) -> {
+         try {
+            server.getManagementService().unregisterBrokerConnectionService(
+               brokerConnection.getName(), "federation", AMQPFederationAddressPolicyControl.SERVICE_TYPE, policy.getPolicyName());
+         } catch (Exception e) {
+            logger.warn("Error while attempting to remote address policy control to management", e);
+         }
+      });
+
+      queueMatchPolicies.forEach((nname, policy) -> {
+         try {
+            server.getManagementService().unregisterBrokerConnectionService(
+               brokerConnection.getName(), "federation", AMQPFederationQueuePolicyControl.SERVICE_TYPE, policy.getPolicyName());
+         } catch (Exception e) {
+            logger.warn("Error while attempting to remote queue policy control to management", e);
+         }
+      });
+
+      super.handleFederationStopped();
+   }
+
+   @Override
    protected void signalResourceCreateError(Exception cause) {
       brokerConnection.connectError(cause);
    }

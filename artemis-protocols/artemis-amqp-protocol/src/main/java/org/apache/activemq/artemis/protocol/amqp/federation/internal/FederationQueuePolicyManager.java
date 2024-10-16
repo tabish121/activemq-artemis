@@ -72,12 +72,37 @@ public abstract class FederationQueuePolicyManager implements ActiveMQServerCons
    }
 
    /**
+    * @return the configured name of the policy being managed.
+    */
+   public String getPolicyName() {
+      return policy.getPolicyName();
+   }
+
+   /**
+    * @return the {@link FederationInternal} instance that owns this policy manager.
+    */
+   public FederationInternal getFederation() {
+      return federation;
+   }
+
+   /**
+    * @return <code>true</code> if the policy is started at the time this method was called.
+    */
+   public boolean isStarted() {
+      return started;
+   }
+
+   /**
     * Start the queue policy manager which will initiate a scan of all broker queue
     * bindings and create and matching remote receivers. Start on a policy manager
     * should only be called after its parent {@link Federation} is started and the
     * federation connection has been established.
     */
    public synchronized void start() {
+      if (!federation.isStarted()) {
+         throw new IllegalStateException("Cannot start a federation policy manager when the federation is stopped.");
+      }
+
       if (!started) {
          started = true;
          handlePolicyManagerStarted(policy);

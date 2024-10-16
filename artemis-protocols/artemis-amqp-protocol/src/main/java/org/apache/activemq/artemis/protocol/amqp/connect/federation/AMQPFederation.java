@@ -34,9 +34,7 @@ import org.apache.activemq.artemis.core.server.ActiveMQServer;
 import org.apache.activemq.artemis.core.server.ActiveMQServerLogger;
 import org.apache.activemq.artemis.protocol.amqp.federation.FederationReceiveFromAddressPolicy;
 import org.apache.activemq.artemis.protocol.amqp.federation.FederationReceiveFromQueuePolicy;
-import org.apache.activemq.artemis.protocol.amqp.federation.internal.FederationAddressPolicyManager;
 import org.apache.activemq.artemis.protocol.amqp.federation.internal.FederationInternal;
-import org.apache.activemq.artemis.protocol.amqp.federation.internal.FederationQueuePolicyManager;
 import org.apache.activemq.artemis.protocol.amqp.proton.AMQPConnectionContext;
 import org.apache.activemq.artemis.protocol.amqp.proton.AMQPSessionContext;
 import org.apache.qpid.proton.engine.Link;
@@ -63,8 +61,8 @@ public abstract class AMQPFederation implements FederationInternal {
    private static final WildcardConfiguration DEFAULT_WILDCARD_CONFIGURATION = new WildcardConfiguration();
 
    // Local policies that should be matched against demand on local addresses and queues.
-   protected final Map<String, FederationQueuePolicyManager> queueMatchPolicies = new ConcurrentHashMap<>();
-   protected final Map<String, FederationAddressPolicyManager> addressMatchPolicies = new ConcurrentHashMap<>();
+   protected final Map<String, AMQPFederationQueuePolicyManager> queueMatchPolicies = new ConcurrentHashMap<>();
+   protected final Map<String, AMQPFederationAddressPolicyManager> addressMatchPolicies = new ConcurrentHashMap<>();
    protected final Map<String, Predicate<Link>> linkClosedinterceptors = new ConcurrentHashMap<>();
 
    protected final WildcardConfiguration wildcardConfiguration;
@@ -260,7 +258,7 @@ public abstract class AMQPFederation implements FederationInternal {
     * @throws ActiveMQException if an error occurs processing the added policy
     */
    public synchronized AMQPFederation addQueueMatchPolicy(FederationReceiveFromQueuePolicy queuePolicy) throws ActiveMQException {
-      final FederationQueuePolicyManager manager = new AMQPFederationQueuePolicyManager(this, queuePolicy);
+      final AMQPFederationQueuePolicyManager manager = new AMQPFederationQueuePolicyManager(this, queuePolicy);
 
       queueMatchPolicies.put(queuePolicy.getPolicyName(), manager);
 
@@ -286,7 +284,7 @@ public abstract class AMQPFederation implements FederationInternal {
     * @throws ActiveMQException if an error occurs processing the added policy
     */
    public synchronized AMQPFederation addAddressMatchPolicy(FederationReceiveFromAddressPolicy addressPolicy) throws ActiveMQException {
-      final FederationAddressPolicyManager manager = new AMQPFederationAddressPolicyManager(this, addressPolicy);
+      final AMQPFederationAddressPolicyManager manager = new AMQPFederationAddressPolicyManager(this, addressPolicy);
 
       addressMatchPolicies.put(addressPolicy.getPolicyName(), manager);
 

@@ -127,6 +127,30 @@ public final class ObjectNameBuilder {
    }
 
    /**
+    * Returns the ObjectName used by BrokerConnectionControl.
+    *
+    * @see BrokerConnectionControl
+    */
+   public ObjectName getBrokerConnectionObjectName(String name) throws Exception {
+      return createObjectName("broker-connection", name);
+   }
+
+   /**
+    * Returns the ObjectName used by the broker connection service.
+    *
+    * @see BrokerConnectionServiceControl
+    */
+   public ObjectName getBrokerConnectionServiceObjectName(String brokerConnection, String catagory, String type, String name) throws Exception {
+      return ObjectName.getInstance(
+         String.format("%s,component=broker-connections,name=%s,serviceCatagory=%s,serviceType=%s,serviceName=%s",
+            getActiveMQServerName(),
+            ObjectName.quote(brokerConnection),
+            ObjectName.quote(catagory.toLowerCase()),
+            ObjectName.quote(type.toLowerCase()),
+            ObjectName.quote(name.toLowerCase())));
+   }
+
+   /**
     * Returns the ObjectName used by BridgeControl.
     *
     * @see BridgeControl

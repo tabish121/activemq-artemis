@@ -31,6 +31,7 @@ import org.apache.activemq.artemis.api.core.RoutingType;
 import org.apache.activemq.artemis.api.core.SimpleString;
 import org.apache.activemq.artemis.api.core.TransportConfiguration;
 import org.apache.activemq.artemis.api.core.management.AddressControl;
+import org.apache.activemq.artemis.api.core.management.BrokerConnectionServiceControl;
 import org.apache.activemq.artemis.api.core.management.ManagementHelper;
 import org.apache.activemq.artemis.api.core.management.ObjectNameBuilder;
 import org.apache.activemq.artemis.core.config.ClusterConnectionConfiguration;
@@ -45,6 +46,7 @@ import org.apache.activemq.artemis.core.security.Role;
 import org.apache.activemq.artemis.core.security.SecurityAuth;
 import org.apache.activemq.artemis.core.security.SecurityStore;
 import org.apache.activemq.artemis.core.server.ActiveMQServer;
+import org.apache.activemq.artemis.core.server.BrokerConnection;
 import org.apache.activemq.artemis.core.server.Divert;
 import org.apache.activemq.artemis.core.server.Queue;
 import org.apache.activemq.artemis.core.server.QueueFactory;
@@ -373,6 +375,16 @@ public class ClusteredResetMockTest extends ServerTestBase {
       }
 
       @Override
+      public void registerBrokerConnection(BrokerConnection brokerConnection) {
+
+      }
+
+      @Override
+      public void unregisterBrokerConnection(String name) {
+
+      }
+
+      @Override
       public void start() throws Exception {
 
       }
@@ -407,6 +419,15 @@ public class ClusteredResetMockTest extends ServerTestBase {
       public void removeNotificationListener(NotificationListener listener) {
 
       }
-   }
 
+      @Override
+      public void registerBrokerConnectionService(String brokerConnection, String catagory, BrokerConnectionServiceControl serviceControl) throws Exception {
+
+      }
+
+      @Override
+      public void unregisterBrokerConnectionService(String brokerConnection, String catagory, String type, String name) throws Exception {
+
+      }
+   }
 }
