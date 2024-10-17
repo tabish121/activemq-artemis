@@ -147,7 +147,7 @@ public class AMQPBridgeConfiguration {
    }
 
    /**
-    * @return true if the federation is configured to tunnel core messages as AMQP custom messages.
+    * @return true if the bridge is configured to tunnel core messages as AMQP custom messages.
     */
    public boolean isCoreMessageTunnelingEnabled() {
       final Object property = properties.get(AmqpSupport.TUNNEL_CORE_MESSAGES);

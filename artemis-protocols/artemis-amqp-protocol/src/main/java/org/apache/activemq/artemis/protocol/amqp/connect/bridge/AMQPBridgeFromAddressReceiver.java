@@ -21,6 +21,7 @@ import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.DETAC
 import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.NOT_FOUND;
 import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.RECEIVER_PRIORITY;
 import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.RESOURCE_DELETED;
+
 import java.lang.invoke.MethodHandles;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -71,8 +72,16 @@ public class AMQPBridgeFromAddressReceiver implements AMQPBridgeReceiver {
 
    private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
-   private static final Symbol[] DEFAULT_OUTCOMES = new Symbol[] {Accepted.DESCRIPTOR_SYMBOL, Rejected.DESCRIPTOR_SYMBOL,
-                                                                  Released.DESCRIPTOR_SYMBOL, Modified.DESCRIPTOR_SYMBOL};
+   private static final Symbol[] OUTCOMES = new Symbol[] {Accepted.DESCRIPTOR_SYMBOL, Rejected.DESCRIPTOR_SYMBOL,
+                                                          Released.DESCRIPTOR_SYMBOL, Modified.DESCRIPTOR_SYMBOL};
+
+   private static final Modified MODIFIED_FAILED;
+   static {
+      Modified modifiedFailed = new Modified();
+      modifiedFailed.setDeliveryFailed(true);
+
+      MODIFIED_FAILED = modifiedFailed;
+   }
 
    private final AMQPBridgeManager bridge;
    private final AMQPBridgeReceiverConfiguration configuration;
@@ -236,7 +245,8 @@ public class AMQPBridgeFromAddressReceiver implements AMQPBridgeReceiver {
             final String address = receiverInfo.getRemoteAddress();
             final String filterString = receiverInfo.getFilterString();
 
-            source.setOutcomes(Arrays.copyOf(DEFAULT_OUTCOMES, DEFAULT_OUTCOMES.length));
+            source.setOutcomes(Arrays.copyOf(OUTCOMES, OUTCOMES.length));
+            source.setDefaultOutcome(MODIFIED_FAILED);
             source.setDurable(TerminusDurability.NONE);
             source.setExpiryPolicy(TerminusExpiryPolicy.LINK_DETACH);
             source.setAddress(address);
@@ -392,7 +402,7 @@ public class AMQPBridgeFromAddressReceiver implements AMQPBridgeReceiver {
          // the target will have an address and it will naturally have a Target otherwise
          // the remote is misbehaving and we close it.
          if (target == null || target.getAddress() == null || target.getAddress().isEmpty()) {
-            throw new ActiveMQAMQPInternalErrorException("Remote should have sent an valid Target but we got: " + target);
+            throw new ActiveMQAMQPInternalErrorException("Remote should have sent a valid Target but we got: " + target);
          }
 
          if (!target.getAddress().equals(receiverInfo.getLocalAddress())) {

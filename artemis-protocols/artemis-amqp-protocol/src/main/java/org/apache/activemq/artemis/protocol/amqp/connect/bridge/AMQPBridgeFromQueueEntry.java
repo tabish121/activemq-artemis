@@ -106,7 +106,7 @@ public class AMQPBridgeFromQueueEntry implements Closeable {
     * Sets the receiver assigned to this entry to the given instance.
     *
     * @param receiver
-    *    The federation consumer that is currently active for this entry.
+    *    The bridge consumer that is currently active for this entry.
     *
     * @return this AMQP bridged queue entry instance.
     */

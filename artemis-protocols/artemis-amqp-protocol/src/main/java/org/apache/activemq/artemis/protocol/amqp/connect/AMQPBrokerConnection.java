@@ -17,7 +17,9 @@
 package org.apache.activemq.artemis.protocol.amqp.connect;
 
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -148,7 +150,7 @@ public class AMQPBrokerConnection implements ClientConnectionLifeCycleListener, 
    private volatile boolean started = false;
    private AMQPMirrorControllerSource mirrorControllerSource;
    private AMQPFederationSource brokerFederation;
-   private AMQPBridgeManager bridgeManager;
+   private Collection<AMQPBridgeManager> bridgeManagers;
    private int retryCounter = 0;
    private int lastRetryCounter;
    private int connectionTimeout;
@@ -169,11 +171,11 @@ public class AMQPBrokerConnection implements ClientConnectionLifeCycleListener, 
     *  the actual connection will come from the amqpConnection configuration*/
    int port;
 
-   public AMQPBrokerConnection(AMQPBrokerConnectionManager bridgeManager,
+   public AMQPBrokerConnection(AMQPBrokerConnectionManager connectionManager,
                                AMQPBrokerConnectConfiguration brokerConnectConfiguration,
                                ProtonProtocolManagerFactory protonProtocolManagerFactory,
                                ActiveMQServer server) throws Exception {
-      this.connectionManager = bridgeManager;
+      this.connectionManager = connectionManager;
       this.brokerConnectConfiguration = brokerConnectConfiguration;
       this.server = server;
       this.configurations = brokerConnectConfiguration.getTransportConfigurations();
@@ -231,11 +233,13 @@ public class AMQPBrokerConnection implements ClientConnectionLifeCycleListener, 
          } catch (ActiveMQException e) {
          }
       }
-      if (bridgeManager != null) {
-         try {
-            bridgeManager.stop();
-         } catch (ActiveMQException e) {
-         }
+      if (bridgeManagers != null && !bridgeManagers.isEmpty()) {
+         bridgeManagers.forEach(bridgeManager -> {
+            try {
+               bridgeManager.stop();
+            } catch (ActiveMQException e) {
+            }
+         });
       }
    }
 
@@ -254,8 +258,7 @@ public class AMQPBrokerConnection implements ClientConnectionLifeCycleListener, 
                } else if (elementType == AMQPBrokerConnectionAddressType.FEDERATION) {
                   installFederation((AMQPFederatedBrokerConnectionElement) connectionElement, server);
                } else if (elementType == AMQPBrokerConnectionAddressType.BRIDGE) {
-                  bridgeManager = AMQPBridgeSupport.createManager(this, (AMQPBridgeBrokerConnectionElement) connectionElement);
-                  bridgeManager.start();
+                  installBridgeManager((AMQPBridgeBrokerConnectionElement) connectionElement, server);
                }
             }
          }
@@ -468,7 +471,11 @@ public class AMQPBrokerConnection implements ClientConnectionLifeCycleListener, 
                   brokerFederation.handleConnectionRestored(protonRemotingConnection.getAmqpConnection(), sessionContext);
                } else if (connectionElement.getType() == AMQPBrokerConnectionAddressType.BRIDGE) {
                   // Starting the Bridge triggers rebuild of AMQP sender and receiver links based on current broker state.
-                  bridgeManager.handleConnectionRestored(protonRemotingConnection.getAmqpConnection(), sessionContext);
+                  if (bridgeManagers != null && !bridgeManagers.isEmpty()) {
+                     for (AMQPBridgeManager bridgeManager : bridgeManagers) {
+                        bridgeManager.handleConnectionRestored(protonRemotingConnection.getAmqpConnection(), sessionContext);
+                     }
+                  }
                }
             }
          }
@@ -605,6 +612,18 @@ public class AMQPBrokerConnection implements ClientConnectionLifeCycleListener, 
       }
 
       return null;
+   }
+
+   private void installBridgeManager(AMQPBridgeBrokerConnectionElement connectionElement, ActiveMQServer server) throws Exception {
+      if (bridgeManagers == null) {
+         bridgeManagers = new ArrayList<>();
+      }
+
+      final AMQPBridgeManager bridgeManager =AMQPBridgeSupport.createManager(this, (AMQPBridgeBrokerConnectionElement) connectionElement);
+
+      bridgeManager.start();
+
+      bridgeManagers.add(bridgeManager);
    }
 
    private void installFederation(AMQPFederatedBrokerConnectionElement connectionElement, ActiveMQServer server) throws Exception {
@@ -1028,11 +1047,15 @@ public class AMQPBrokerConnection implements ClientConnectionLifeCycleListener, 
          }
       }
 
-      if (bridgeManager != null) {
-         try {
-            bridgeManager.handleConnectionDropped();
-         } catch (ActiveMQException e) {
-            logger.debug("AMQP Bridge on connection {} threw an error on stop before connection attempt", getName());
+      if (bridgeManagers != null && !bridgeManagers.isEmpty()) {
+         for (AMQPBridgeManager bridgeManager : bridgeManagers) {
+            if (bridgeManager != null) {
+               try {
+                  bridgeManager.handleConnectionDropped();
+               } catch (ActiveMQException e) {
+                  logger.debug("AMQP Bridge on connection {} threw an error on stop before connection attempt", getName());
+               }
+            }
          }
       }
 

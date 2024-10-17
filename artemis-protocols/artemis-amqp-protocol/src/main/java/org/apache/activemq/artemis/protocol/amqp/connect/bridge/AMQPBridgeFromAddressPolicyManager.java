@@ -300,6 +300,7 @@ public class AMQPBridgeFromAddressPolicyManager implements ActiveMQServerBinding
                      });
             }
          } catch (Exception e) {
+            // This logger has a bad name, the actual message is not federation specific.
             ActiveMQServerLogger.LOGGER.federationBindingsLookupError(forwardAddress, e);
          }
       }

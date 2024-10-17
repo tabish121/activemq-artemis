@@ -69,6 +69,7 @@ import org.apache.qpid.proton.amqp.Symbol;
 import org.apache.qpid.proton.amqp.transport.AmqpError;
 import org.apache.qpid.proton.amqp.transport.LinkError;
 import org.apache.qpid.protonj2.test.driver.ProtonTestServer;
+import org.apache.qpid.protonj2.test.driver.codec.messaging.Modified;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -136,9 +137,14 @@ class AMQPBridgeFromQueueTest extends AmqpClientTestSupport {
                                                          .setAutoCreated(false));
 
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+
+         final Modified deliveryFailed = new Modified();
+         deliveryFailed.setDeliveryFailed(true);
+
          peer.expectAttach().ofReceiver()
                             .withTarget().withAddress("test::test").also()
-                            .withSource().withAddress("test").also()
+                            .withSource().withAddress("test")
+                                         .withDefaultOutcome(deliveryFailed).also()
                             .withName(allOf(containsString(getTestName()),
                                             containsString("test"),
                                             containsString("queue-receiver"),
