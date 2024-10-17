@@ -23,6 +23,7 @@ import java.util.concurrent.Executor;
 
 import org.apache.activemq.artemis.api.config.ActiveMQDefaultConfiguration;
 import org.apache.activemq.artemis.api.core.ActiveMQException;
+import org.apache.activemq.artemis.api.core.ActiveMQInternalErrorException;
 import org.apache.activemq.artemis.api.core.ActiveMQQueueExistsException;
 import org.apache.activemq.artemis.api.core.ActiveMQSecurityException;
 import org.apache.activemq.artemis.api.core.AutoCreateResult;
@@ -573,6 +574,15 @@ public class AMQPSessionCallback implements SessionCallback {
             }
          }
 
+         if (transaction != null) {
+            if (e instanceof ActiveMQException) {
+               transaction.markAsRollbackOnly((ActiveMQException) e);
+            } else {
+               transaction.markAsRollbackOnly(
+                  new ActiveMQInternalErrorException("Delivery failed trigger TXN marked as rollback only", e));
+            }
+         }
+
          throw e;
       } finally {
          resetContext(oldcontext);
@@ -649,6 +659,15 @@ public class AMQPSessionCallback implements SessionCallback {
                ((LargeServerMessage) message).deleteFile();
             } catch (Exception e1) {
                logger.warn("Error while deleting undelivered large AMQP message: {}", e.getMessage());
+            }
+         }
+
+         if (transaction != null) {
+            if (e instanceof ActiveMQException) {
+               transaction.markAsRollbackOnly((ActiveMQException) e);
+            } else {
+               transaction.markAsRollbackOnly(
+                  new ActiveMQInternalErrorException("Delivery failed trigger TXN marked as rollback only", e));
             }
          }
 
