@@ -78,8 +78,16 @@ public class AMQPBridgeFromQueueReceiver implements AMQPBridgeReceiver {
    public static final int DEFAULT_PENDING_MSG_CHECK_BACKOFF_MULTIPLIER = 2;
    public static final int DEFAULT_PENDING_MSG_CHECK_MAX_DELAY = 30;
 
-   private static final Symbol[] DEFAULT_OUTCOMES = new Symbol[] {Accepted.DESCRIPTOR_SYMBOL, Rejected.DESCRIPTOR_SYMBOL,
-                                                                  Released.DESCRIPTOR_SYMBOL, Modified.DESCRIPTOR_SYMBOL};
+   private static final Symbol[] OUTCOMES = new Symbol[] {Accepted.DESCRIPTOR_SYMBOL, Rejected.DESCRIPTOR_SYMBOL,
+                                                          Released.DESCRIPTOR_SYMBOL, Modified.DESCRIPTOR_SYMBOL};
+
+   private static final Modified MODIFIED_FAILED;
+   static {
+      Modified modifiedFailed = new Modified();
+      modifiedFailed.setDeliveryFailed(true);
+
+      MODIFIED_FAILED = modifiedFailed;
+   }
 
    // Sequence ID value used to keep links that would otherwise have the same name from overlapping
    // this generally occurs when consumers on the same queue have differing filters.
@@ -251,7 +259,8 @@ public class AMQPBridgeFromQueueReceiver implements AMQPBridgeReceiver {
             final String filterString = receiverInfo.getFilterString();
             final Queue localQueue = bridge.getServer().locateQueue(receiverInfo.getLocalQueue());
 
-            source.setOutcomes(Arrays.copyOf(DEFAULT_OUTCOMES, DEFAULT_OUTCOMES.length));
+            source.setOutcomes(Arrays.copyOf(OUTCOMES, OUTCOMES.length));
+            source.setDefaultOutcome(MODIFIED_FAILED);
             source.setDurable(TerminusDurability.NONE);
             source.setExpiryPolicy(TerminusExpiryPolicy.LINK_DETACH);
             source.setAddress(address);
@@ -407,7 +416,7 @@ public class AMQPBridgeFromQueueReceiver implements AMQPBridgeReceiver {
          // the target will have an address and it will naturally have a Target otherwise
          // the remote is misbehaving and we close it.
          if (target == null || target.getAddress() == null || target.getAddress().isEmpty()) {
-            throw new ActiveMQAMQPInternalErrorException("Remote should have sent an valid Target but we got: " + target);
+            throw new ActiveMQAMQPInternalErrorException("Remote should have sent a valid Target but we got: " + target);
          }
 
          if (!target.getAddress().equals(receiverInfo.getLocalFqqn())) {
@@ -460,9 +469,7 @@ public class AMQPBridgeFromQueueReceiver implements AMQPBridgeReceiver {
       protected Runnable createCreditRunnable(AMQPConnectionContext connection) {
          // We defer to the configuration instance as opposed to the base class version that reads
          // from the connection this allows us to defer to configured policy properties that specify
-         // credit. This also allows consumers created on the remote side of a federation connection
-         // to read from properties sent from the federation source that indicate the values that are
-         // configured on the local side.
+         // credit.
          if (configuration.getReceiverCredits() > 0) {
             return createCreditRunnable(configuration.getReceiverCredits(), configuration.getReceiverCreditsLow(), receiver, connection, this);
          } else {
