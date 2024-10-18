@@ -75,7 +75,7 @@ public class AMQPBridgeSupport {
          fromAddressPolicies = new HashSet<>();
 
          for (AMQPBridgeAddressPolicyElement element : fromAddress) {
-            logger.debug("AMQP Bridge {} adding brigde from address policy: {}", bridgeElement.getName(), element.getName());
+            logger.debug("AMQP Bridge {} adding bridge from address policy: {}", bridgeElement.getName(), element.getName());
             fromAddressPolicies.add(createBridgeAddressPolicy(element, wildcardConfiguration));
          }
       }
@@ -84,7 +84,7 @@ public class AMQPBridgeSupport {
          toAddressPolicies = new HashSet<>();
 
          for (AMQPBridgeAddressPolicyElement element : toAddress) {
-            logger.debug("AMQP Bridge {} adding brigde to address policy: {}", bridgeElement.getName(), element.getName());
+            logger.debug("AMQP Bridge {} adding bridge to address policy: {}", bridgeElement.getName(), element.getName());
             toAddressPolicies.add(createBridgeAddressPolicy(element, wildcardConfiguration));
          }
       }
@@ -93,7 +93,7 @@ public class AMQPBridgeSupport {
          fromQueuePolicies = new HashSet<>();
 
          for (AMQPBridgeQueuePolicyElement element : fromQueue) {
-            logger.debug("AMQP Bridge {} adding brigde from Queue policy: {}", bridgeElement.getName(), element.getName());
+            logger.debug("AMQP Bridge {} adding bridge from Queue policy: {}", bridgeElement.getName(), element.getName());
             fromQueuePolicies.add(createBridgeQueuePolicy(element, wildcardConfiguration));
          }
       }
@@ -102,7 +102,7 @@ public class AMQPBridgeSupport {
          toQueuePolicies = new HashSet<>();
 
          for (AMQPBridgeQueuePolicyElement element : toQueue) {
-            logger.debug("AMQP Bridge {} adding brigde to Queue policy: {}", bridgeElement.getName(), element.getName());
+            logger.debug("AMQP Bridge {} adding bridge to Queue policy: {}", bridgeElement.getName(), element.getName());
             toQueuePolicies.add(createBridgeQueuePolicy(element, wildcardConfiguration));
          }
       }

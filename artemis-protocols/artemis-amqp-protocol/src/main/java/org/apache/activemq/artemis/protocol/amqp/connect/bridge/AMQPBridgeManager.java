@@ -184,6 +184,7 @@ public class AMQPBridgeManager {
          try {
             manager.stop();
          } catch (Exception ex) {
+            logger.trace("Exception caught on from address policy manager stop: " , ex);
             errorCaught.compareAndExchange(null, ex);
          }
       });
@@ -192,6 +193,7 @@ public class AMQPBridgeManager {
          try {
             manager.stop();
          } catch (Exception ex) {
+            logger.trace("Exception caught on to address policy manager stop: " , ex);
             errorCaught.compareAndExchange(null, ex);
          }
       });
@@ -200,6 +202,7 @@ public class AMQPBridgeManager {
          try {
             manager.stop();
          } catch (Exception ex) {
+            logger.trace("Exception caught on from queue policy manager stop: " , ex);
             errorCaught.compareAndExchange(null, ex);
          }
       });
@@ -208,6 +211,7 @@ public class AMQPBridgeManager {
          try {
             manager.stop();
          } catch (Exception ex) {
+            logger.trace("Exception caught on to queue policy manager stop: " , ex);
             errorCaught.compareAndExchange(null, ex);
          }
       });

@@ -2694,6 +2694,111 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
       }
    }
 
+   @Test
+   @Timeout(20)
+   public void testMultipleBridgeConfigurationElementsHandledAndCreatesReceiversForDemand() throws Exception {
+      try (ProtonTestServer peer = new ProtonTestServer()) {
+         peer.expectSASLAnonymousConnect();
+         peer.expectOpen().respond();
+         peer.expectBegin().respond();
+         peer.start();
+
+         final URI remoteURI = peer.getServerURI();
+         logger.info("Test started, peer listening on: {}", remoteURI);
+
+         // Bridge element one
+         final AMQPBridgeAddressPolicyElement receiveFromAddress1 = new AMQPBridgeAddressPolicyElement();
+         receiveFromAddress1.setName("address-policy-1");
+         receiveFromAddress1.addToIncludes("testA");
+         final AMQPBridgeBrokerConnectionElement element1 = new AMQPBridgeBrokerConnectionElement();
+         element1.setName(getTestName());
+         element1.addBridgeFromAddressPolicy(receiveFromAddress1);
+
+         // Bridge element two
+         final AMQPBridgeAddressPolicyElement receiveFromAddress2 = new AMQPBridgeAddressPolicyElement();
+         receiveFromAddress2.setName("address-policy-2");
+         receiveFromAddress2.addToIncludes("testB");
+         final AMQPBridgeBrokerConnectionElement element2 = new AMQPBridgeBrokerConnectionElement();
+         element2.setName(getTestName());
+         element2.addBridgeFromAddressPolicy(receiveFromAddress2);
+
+         final AMQPBrokerConnectConfiguration amqpConnection =
+            new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
+         amqpConnection.setReconnectAttempts(0);// No reconnects
+         amqpConnection.addElement(element1);
+         amqpConnection.addElement(element2);
+
+         server.getConfiguration().addAMQPConnection(amqpConnection);
+         server.start();
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+
+         final Modified deliveryFailed = new Modified();
+         deliveryFailed.setDeliveryFailed(true);
+
+         peer.expectAttach().ofReceiver()
+                            .withTarget().withAddress("testA").also()
+                            .withSource().withAddress("testA")
+                                         .withDefaultOutcome(deliveryFailed).also()
+                            .withName(allOf(containsString(getTestName()),
+                                            containsString("testA"),
+                                            containsString("address-receiver"),
+                                            containsString("amqp-bridge"),
+                                            containsString(server.getNodeID().toString())))
+                            .respond();
+         peer.expectFlow().withLinkCredit(1000);
+
+         server.createQueue(QueueConfiguration.of("testA").setRoutingType(RoutingType.MULTICAST)
+                                                          .setAddress("testA")
+                                                          .setAutoCreated(false));
+
+         Wait.assertTrue(() -> server.queueQuery(SimpleString.of("testA")).isExists());
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectAttach().ofReceiver()
+                            .withTarget().withAddress("testB").also()
+                            .withSource().withAddress("testB")
+                                         .withDefaultOutcome(deliveryFailed).also()
+                            .withName(allOf(containsString(getTestName()),
+                                            containsString("testB"),
+                                            containsString("address-receiver"),
+                                            containsString("amqp-bridge"),
+                                            containsString(server.getNodeID().toString())))
+                            .respond();
+         peer.expectFlow().withLinkCredit(1000);
+
+         server.createQueue(QueueConfiguration.of("testB").setRoutingType(RoutingType.MULTICAST)
+                                                          .setAddress("testB")
+                                                          .setAutoCreated(false));
+
+         Wait.assertTrue(() -> server.queueQuery(SimpleString.of("testB")).isExists());
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectDetach().respond();
+
+         // This should trigger the bridged consumer to be shutdown as the statically defined queue
+         // should be the only demand on the address.
+         logger.info("Removing Queues from bridged address 'testA' to eliminate demand");
+         server.destroyQueue(SimpleString.of("testA"));
+         Wait.assertFalse(() -> server.queueQuery(SimpleString.of("testA")).isExists());
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectDetach().respond();
+
+         // This should trigger the bridged consumer to be shutdown as the statically defined queue
+         // should be the only demand on the address.
+         logger.info("Removing Queues from bridged address 'testB' to eliminate demand");
+         server.destroyQueue(SimpleString.of("testB"));
+         Wait.assertFalse(() -> server.queueQuery(SimpleString.of("testB")).isExists());
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectClose();
+         peer.remoteClose().now();
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.close();
+      }
+   }
+
    public static class ApplicationPropertiesTransformer implements Transformer {
 
       private final Map<String, String> properties = new HashMap<>();

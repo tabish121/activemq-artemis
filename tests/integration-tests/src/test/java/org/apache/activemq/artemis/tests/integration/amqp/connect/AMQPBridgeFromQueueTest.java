@@ -2977,4 +2977,99 @@ class AMQPBridgeFromQueueTest extends AmqpClientTestSupport {
          }
       }
    }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeFromQueueHandledMultipleBridgeConfigurationsAndCreatesReceiver() throws Exception {
+      try (ProtonTestServer peer = new ProtonTestServer()) {
+         peer.expectSASLAnonymousConnect();
+         peer.expectOpen().respond();
+         peer.expectBegin().respond();
+         peer.start();
+
+         final URI remoteURI = peer.getServerURI();
+         logger.info("Connect test started, peer listening on: {}", remoteURI);
+
+         final AMQPBridgeQueuePolicyElement receiveFromQueue1 = new AMQPBridgeQueuePolicyElement();
+         receiveFromQueue1.setName("queue-policy-1");
+         receiveFromQueue1.setFilter("color='red'");
+         receiveFromQueue1.addToIncludes("test", "testA");
+         final AMQPBridgeBrokerConnectionElement element1 = new AMQPBridgeBrokerConnectionElement();
+         element1.setName(getTestName());
+         element1.addBridgeFromQueuePolicy(receiveFromQueue1);
+
+         final AMQPBridgeQueuePolicyElement receiveFromQueue2 = new AMQPBridgeQueuePolicyElement();
+         receiveFromQueue2.setName("queue-policy-2");
+         receiveFromQueue2.setFilter("color='blue'");
+         receiveFromQueue2.addToIncludes("#", "testB");
+         final AMQPBridgeBrokerConnectionElement element2 = new AMQPBridgeBrokerConnectionElement();
+         element2.setName(getTestName());
+         element2.addBridgeFromQueuePolicy(receiveFromQueue2);
+
+         final AMQPBrokerConnectConfiguration amqpConnection =
+            new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
+         amqpConnection.setReconnectAttempts(0);// No reconnects
+         amqpConnection.addElement(element1);
+         amqpConnection.addElement(element2);
+
+         server.getConfiguration().addAMQPConnection(amqpConnection);
+         server.start();
+         server.createQueue(QueueConfiguration.of("testA").setRoutingType(RoutingType.ANYCAST)
+                                                          .setAddress("test")
+                                                          .setAutoCreated(false));
+         server.createQueue(QueueConfiguration.of("testB").setRoutingType(RoutingType.ANYCAST)
+                                                          .setAddress("address")
+                                                          .setAutoCreated(false));
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectAttach().ofReceiver()
+                            .withTarget().withAddress("test::testA").also()
+                            .withSource().withAddress("testA")
+                                         .withJMSSelector("color='red'").also()
+                            .withName(allOf(containsString(getTestName()),
+                                            containsString("testA"),
+                                            containsString("queue-receiver"),
+                                            containsString("amqp-bridge"),
+                                            containsString(server.getNodeID().toString())))
+                            .respond();
+         peer.expectFlow().withLinkCredit(1000);
+
+         final ConnectionFactory factory = CFUtil.createConnectionFactory("AMQP", "tcp://localhost:" + AMQP_PORT);
+
+         try (Connection connection = factory.createConnection()) {
+            final Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE);
+            session.createConsumer(session.createQueue("testA"));
+
+            connection.start();
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectDetach().respond();
+         }
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectAttach().ofReceiver()
+                            .withTarget().withAddress("address::testB").also()
+                            .withSource().withAddress("testB")
+                                         .withJMSSelector("color='blue'").also()
+                            .withName(allOf(containsString(getTestName()),
+                                            containsString("testB"),
+                                            containsString("queue-receiver"),
+                                            containsString("amqp-bridge"),
+                                            containsString(server.getNodeID().toString())))
+                            .respond();
+         peer.expectFlow().withLinkCredit(1000);
+
+         try (Connection connection = factory.createConnection()) {
+            final Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE);
+            session.createConsumer(session.createQueue("testB"));
+
+            connection.start();
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectDetach().respond();
+         }
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+      }
+   }
 }

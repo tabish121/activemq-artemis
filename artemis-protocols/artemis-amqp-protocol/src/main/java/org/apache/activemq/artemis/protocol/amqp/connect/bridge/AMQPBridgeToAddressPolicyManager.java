@@ -107,7 +107,7 @@ public class AMQPBridgeToAddressPolicyManager implements ActiveMQServerAddressPl
 
                addressTracking.put(entry.getLocalAddress(), entry);
 
-               tryCreateBridgeReceiverForAddress(entry);
+               tryCreateBridgeSenderForAddress(entry);
             }
          } catch (Exception e) {
             logger.warn("Error looking up bindings for address {}.", addressInfo, e);
@@ -135,11 +135,11 @@ public class AMQPBridgeToAddressPolicyManager implements ActiveMQServerAddressPl
             .forEach(addressInfo -> afterAddAddress(addressInfo, false));
    }
 
-   private void tryCreateBridgeReceiverForAddress(AMQPBridgeToAddressEntry addressEntry) {
+   private void tryCreateBridgeSenderForAddress(AMQPBridgeToAddressEntry addressEntry) {
       final AddressInfo addressInfo = addressEntry.getAddressInfo();
 
       if (!addressEntry.hasSender()) {
-         logger.trace("AMQP Brigde from Address Policy manager creating remote receiver for address: {}", addressInfo);
+         logger.trace("AMQP Bridge to Address Policy manager creating remote sender for address: {}", addressInfo);
 
          final AMQPBridgeSenderInfo senderInfo = createSenderInfo(addressInfo);
          final AMQPBridgeSender addressSender = createBridgeSender(senderInfo);
@@ -147,7 +147,7 @@ public class AMQPBridgeToAddressPolicyManager implements ActiveMQServerAddressPl
          // Handle remote open and cancel any additional link recovery attempts. Ensure that
          // thread safety is accounted for here as the notification come from the connection
          // thread.
-         addressSender.setRemoteOpenHandler(openedReceiver -> {
+         addressSender.setRemoteOpenHandler(openedSender -> {
             synchronized (this) {
                final AMQPBridgeLinkRecoveryHandler<AMQPBridgeToAddressEntry> recoveryHandler = addressEntry.getRecoveryHandler();
 
@@ -164,10 +164,10 @@ public class AMQPBridgeToAddressPolicyManager implements ActiveMQServerAddressPl
             }
          });
 
-         // Handle remote close with remove of receiver which means that future demand will
-         // attempt to create a new receiver for that demand. Ensure that thread safety is
+         // Handle remote close with remove of sender which means that future demand will
+         // attempt to create a new sender for that demand. Ensure that thread safety is
          // accounted for here as the notification can be asynchronous.
-         addressSender.setRemoteClosedHandler((closedReceiver) -> {
+         addressSender.setRemoteClosedHandler((closedSender) -> {
             synchronized (this) {
                try {
                   final AMQPBridgeToAddressEntry tracked = addressTracking.get(addressEntry.getLocalAddress());
@@ -176,7 +176,7 @@ public class AMQPBridgeToAddressPolicyManager implements ActiveMQServerAddressPl
                      tracked.clearSender();
                   }
                } finally {
-                  closedReceiver.close();
+                  closedSender.close();
                }
 
                if (configuration.isLinkRecoveryEnabled()) {
@@ -213,7 +213,7 @@ public class AMQPBridgeToAddressPolicyManager implements ActiveMQServerAddressPl
          if (started) {
             // This will check for existing demand and or an existing sender
             // in order to prevent duplicate links so we don't need to check here.
-            tryCreateBridgeReceiverForAddress(entry);
+            tryCreateBridgeSenderForAddress(entry);
          }
       }
    }
