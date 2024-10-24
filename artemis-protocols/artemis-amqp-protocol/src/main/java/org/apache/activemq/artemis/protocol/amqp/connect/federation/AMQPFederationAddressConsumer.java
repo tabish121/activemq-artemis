@@ -26,10 +26,6 @@ import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPF
 import static org.apache.activemq.artemis.protocol.amqp.proton.AMQPTunneledMessageConstants.AMQP_TUNNELED_CORE_LARGE_MESSAGE_FORMAT;
 import static org.apache.activemq.artemis.protocol.amqp.proton.AMQPTunneledMessageConstants.AMQP_TUNNELED_CORE_MESSAGE_FORMAT;
 import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.AMQP_LINK_INITIALIZER_KEY;
-import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.DETACH_FORCED;
-import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.NOT_FOUND;
-import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.RESOURCE_DELETED;
-
 import java.lang.invoke.MethodHandles;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -37,9 +33,7 @@ import java.util.Map;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Consumer;
-import java.util.function.Predicate;
-
+import java.util.function.BiConsumer;
 import org.apache.activemq.artemis.api.core.ActiveMQException;
 import org.apache.activemq.artemis.api.core.ICoreMessage;
 import org.apache.activemq.artemis.api.core.Message;
@@ -54,10 +48,8 @@ import org.apache.activemq.artemis.protocol.amqp.broker.AMQPMessage;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPException;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPInternalErrorException;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPNotFoundException;
-import org.apache.activemq.artemis.protocol.amqp.federation.Federation;
 import org.apache.activemq.artemis.protocol.amqp.federation.FederationConsumerInfo;
 import org.apache.activemq.artemis.protocol.amqp.federation.FederationReceiveFromAddressPolicy;
-import org.apache.activemq.artemis.protocol.amqp.federation.internal.FederationConsumerInternal;
 import org.apache.activemq.artemis.protocol.amqp.logger.ActiveMQAMQPProtocolMessageBundle;
 import org.apache.activemq.artemis.protocol.amqp.proton.AMQPConnectionContext;
 import org.apache.activemq.artemis.protocol.amqp.proton.AMQPSessionContext;
@@ -70,11 +62,7 @@ import org.apache.activemq.artemis.protocol.amqp.proton.MessageReader;
 import org.apache.activemq.artemis.protocol.amqp.proton.ProtonServerReceiverContext;
 import org.apache.activemq.artemis.reader.MessageUtil;
 import org.apache.qpid.proton.amqp.Symbol;
-import org.apache.qpid.proton.amqp.messaging.Accepted;
 import org.apache.qpid.proton.amqp.messaging.DeliveryAnnotations;
-import org.apache.qpid.proton.amqp.messaging.Modified;
-import org.apache.qpid.proton.amqp.messaging.Rejected;
-import org.apache.qpid.proton.amqp.messaging.Released;
 import org.apache.qpid.proton.amqp.messaging.Source;
 import org.apache.qpid.proton.amqp.messaging.Target;
 import org.apache.qpid.proton.amqp.messaging.TerminusDurability;
@@ -82,7 +70,6 @@ import org.apache.qpid.proton.amqp.messaging.TerminusExpiryPolicy;
 import org.apache.qpid.proton.amqp.transport.ReceiverSettleMode;
 import org.apache.qpid.proton.amqp.transport.SenderSettleMode;
 import org.apache.qpid.proton.engine.Delivery;
-import org.apache.qpid.proton.engine.Link;
 import org.apache.qpid.proton.engine.Receiver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -92,7 +79,7 @@ import org.slf4j.LoggerFactory;
  * AMQP peer and forwards those messages onto the internal broker Address for
  * consumption by an attached consumers.
  */
-public class AMQPFederationAddressConsumer implements FederationConsumerInternal {
+public class AMQPFederationAddressConsumer extends AMQPFederationConsumer {
 
    private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
@@ -100,32 +87,20 @@ public class AMQPFederationAddressConsumer implements FederationConsumerInternal
    private static final SimpleString MESSAGE_HOPS_ANNOTATION =
       SimpleString.of(AMQPFederationPolicySupport.MESSAGE_HOPS_ANNOTATION.toString());
 
-   private static final Symbol[] DEFAULT_OUTCOMES = new Symbol[]{Accepted.DESCRIPTOR_SYMBOL, Rejected.DESCRIPTOR_SYMBOL,
-                                                                 Released.DESCRIPTOR_SYMBOL, Modified.DESCRIPTOR_SYMBOL};
-
-   private final AMQPFederation federation;
-   private final AMQPFederationConsumerConfiguration configuration;
-   private final FederationConsumerInfo consumerInfo;
+   private final AMQPFederationAddressPolicyManager manager;
    private final FederationReceiveFromAddressPolicy policy;
-   private final AMQPConnectionContext connection;
-   private final AMQPSessionContext session;
-   private final Predicate<Link> remoteCloseInterceptor = this::remoteLinkClosedInterceptor;
    private final Transformer transformer;
 
    private AMQPFederatedAddressDeliveryReceiver receiver;
-   private Receiver protonReceiver;
-   private boolean started;
-   private volatile boolean closed;
-   private Consumer<FederationConsumerInternal> remoteCloseHandler;
 
-   public AMQPFederationAddressConsumer(AMQPFederation federation, AMQPFederationConsumerConfiguration configuration,
-                                        AMQPSessionContext session, FederationConsumerInfo consumerInfo, FederationReceiveFromAddressPolicy policy) {
-      this.federation = federation;
-      this.consumerInfo = consumerInfo;
-      this.policy = policy;
-      this.connection = session.getAMQPConnectionContext();
-      this.session = session;
-      this.configuration = configuration;
+   public AMQPFederationAddressConsumer(AMQPFederationAddressPolicyManager manager,
+                                        AMQPFederationConsumerConfiguration configuration,
+                                        AMQPSessionContext session, FederationConsumerInfo consumerInfo,
+                                        BiConsumer<FederationConsumerInfo, Message> incomingSpy) {
+      super(manager.getFederation(), configuration, session, consumerInfo, incomingSpy);
+
+      this.manager = manager;
+      this.policy = manager.getPolicy();
 
       final TransformerConfiguration transformerConfiguration = policy.getTransformerConfiguration();
       if (transformerConfiguration != null) {
@@ -135,97 +110,11 @@ public class AMQPFederationAddressConsumer implements FederationConsumerInternal
       }
    }
 
-   @Override
-   public Federation getFederation() {
-      return federation;
-   }
-
-   @Override
-   public FederationConsumerInfo getConsumerInfo() {
-      return consumerInfo;
-   }
-
    /**
     * @return the {@link FederationReceiveFromAddressPolicy} that initiated this consumer.
     */
    public FederationReceiveFromAddressPolicy getPolicy() {
       return policy;
-   }
-
-   @Override
-   public synchronized void start() {
-      if (!started && !closed) {
-         started = true;
-         asyncCreateReceiver();
-      }
-   }
-
-   @Override
-   public synchronized void close() {
-      if (!closed) {
-         closed = true;
-         if (started) {
-            started = false;
-            connection.runLater(() -> {
-               federation.removeLinkClosedInterceptor(consumerInfo.getId());
-
-               if (receiver != null) {
-                  try {
-                     receiver.close(false);
-                  } catch (ActiveMQAMQPException e) {
-                  } finally {
-                     receiver = null;
-                  }
-               }
-
-               // Need to track the proton receiver and close it here as the default
-               // context implementation doesn't do that and could result in no detach
-               // being sent in some cases and possible resources leaks.
-               if (protonReceiver != null) {
-                  try {
-                     protonReceiver.close();
-                  } finally {
-                     protonReceiver = null;
-                  }
-               }
-
-               connection.flush();
-            });
-         }
-      }
-   }
-
-   @Override
-   public synchronized AMQPFederationAddressConsumer setRemoteClosedHandler(Consumer<FederationConsumerInternal> handler) {
-      if (started) {
-         throw new IllegalStateException("Cannot set a remote close handler after the consumer is started");
-      }
-
-      this.remoteCloseHandler = handler;
-      return this;
-   }
-
-   protected boolean remoteLinkClosedInterceptor(Link link) {
-      if (link == protonReceiver && link.getRemoteCondition() != null && link.getRemoteCondition().getCondition() != null) {
-         final Symbol errorCondition = link.getRemoteCondition().getCondition();
-
-         // Cases where remote link close is not considered terminal, additional checks
-         // should be added as needed for cases where the remote has closed the link either
-         // during the attach or at some point later.
-
-         if (RESOURCE_DELETED.equals(errorCondition)) {
-            // Remote side manually deleted this queue.
-            return true;
-         } else if (NOT_FOUND.equals(errorCondition)) {
-            // Remote did not have a queue that matched.
-            return true;
-         } else if (DETACH_FORCED.equals(errorCondition)) {
-            // Remote operator forced the link to detach.
-            return true;
-         }
-      }
-
-      return false;
    }
 
    private void signalBeforeFederationConsumerMessageHandled(Message message) throws ActiveMQException {
@@ -258,7 +147,8 @@ public class AMQPFederationAddressConsumer implements FederationConsumerInternal
              "-" + federation.getServer().getNodeID();
    }
 
-   private void asyncCreateReceiver() {
+   @Override
+   protected final void asyncCreateReceiver() {
       connection.runLater(() -> {
          if (closed) {
             return;
@@ -285,7 +175,8 @@ public class AMQPFederationAddressConsumer implements FederationConsumerInternal
                filtersMap.put(AmqpSupport.JMS_SELECTOR_KEY, jmsFilter);
             }
 
-            source.setOutcomes(Arrays.copyOf(DEFAULT_OUTCOMES, DEFAULT_OUTCOMES.length));
+            source.setOutcomes(Arrays.copyOf(OUTCOMES, OUTCOMES.length));
+            source.setDefaultOutcome(DEFAULT_OUTCOME);
             source.setDurable(TerminusDurability.NONE);
             source.setExpiryPolicy(TerminusExpiryPolicy.LINK_DETACH);
             source.setAddress(address);
@@ -379,6 +270,35 @@ public class AMQPFederationAddressConsumer implements FederationConsumerInternal
       });
    }
 
+   @Override
+   protected final void asyncCloseReceiver() {
+      connection.runLater(() -> {
+         federation.removeLinkClosedInterceptor(consumerInfo.getId());
+
+         if (receiver != null) {
+            try {
+               receiver.close(false);
+            } catch (ActiveMQAMQPException e) {
+            } finally {
+               receiver = null;
+            }
+         }
+
+         // Need to track the proton receiver and close it here as the default
+         // context implementation doesn't do that and could result in no detach
+         // being sent in some cases and possible resources leaks.
+         if (protonReceiver != null) {
+            try {
+               protonReceiver.close();
+            } finally {
+               protonReceiver = null;
+            }
+         }
+
+         connection.flush();
+      });
+   }
+
    private static AMQPMessage incrementAMQPMessageHops(AMQPMessage message) {
       Object hops = message.getAnnotation(MESSAGE_HOPS_ANNOTATION);
 
@@ -417,8 +337,8 @@ public class AMQPFederationAddressConsumer implements FederationConsumerInternal
       private final SimpleString cachedAddress;
 
       private MessageReader coreMessageReader;
-
       private MessageReader coreLargeMessageReader;
+      private boolean closed;
 
       /**
        * Creates the federation receiver instance.
@@ -436,15 +356,25 @@ public class AMQPFederationAddressConsumer implements FederationConsumerInternal
 
       @Override
       public void close(boolean remoteLinkClose) throws ActiveMQAMQPException {
-         super.close(remoteLinkClose);
+         if (!closed) {
+            super.close(remoteLinkClose);
 
-         if (remoteLinkClose && remoteCloseHandler != null) {
+            closed = true;
+
             try {
-               remoteCloseHandler.accept(AMQPFederationAddressConsumer.this);
+               federation.unregisterAddressConsumerManagement(manager, AMQPFederationAddressConsumer.this);
             } catch (Exception e) {
-               logger.debug("User remote closed handler threw error: ", e);
-            } finally {
-               remoteCloseHandler = null;
+               logger.trace("Error thrown when unregistering federation address consumer from management", e);
+            }
+
+            if (remoteLinkClose && remoteCloseHandler != null) {
+               try {
+                  remoteCloseHandler.accept(AMQPFederationAddressConsumer.this);
+               } catch (Exception e) {
+                  logger.debug("User remote closed handler threw error: ", e);
+               } finally {
+                  remoteCloseHandler = null;
+               }
             }
          }
       }
@@ -502,6 +432,12 @@ public class AMQPFederationAddressConsumer implements FederationConsumerInternal
             throw new ActiveMQAMQPInternalErrorException(e.getMessage(), e);
          }
 
+         try {
+            federation.registerAddressConsumerManagement(manager, AMQPFederationAddressConsumer.this);
+         } catch (Exception e) {
+            logger.debug("Error caught when trying to add federation address consumer to management", e);
+         }
+
          flow();
       }
 
@@ -552,6 +488,8 @@ public class AMQPFederationAddressConsumer implements FederationConsumerInternal
          } catch (Exception e) {
             logger.warn("Inbound delivery for {} encountered an error: {}", consumerInfo, e.getMessage(), e);
             deliveryFailed(delivery, receiver, e);
+         } finally {
+            recordFederatedMessageReceopt(message);
          }
       }
    }

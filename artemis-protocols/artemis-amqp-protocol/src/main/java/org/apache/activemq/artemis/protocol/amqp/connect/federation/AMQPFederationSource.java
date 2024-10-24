@@ -103,8 +103,8 @@ public class AMQPFederationSource extends AMQPFederation {
     *    The broker connection over which this federation will occur.
     */
    @SuppressWarnings("unchecked")
-   public AMQPFederationSource(String name, Map<String, Object> properties, AMQPBrokerConnection connection) {
-      super(name, connection.getServer());
+   public AMQPFederationSource(String brokerConnectionName, String name, Map<String, Object> properties, AMQPBrokerConnection connection) {
+      super(brokerConnectionName, name, connection.getServer());
 
       if (properties == null || properties.isEmpty()) {
          this.properties = Collections.EMPTY_MAP;
@@ -266,6 +266,50 @@ public class AMQPFederationSource extends AMQPFederation {
       // Create the control link and the outcome will then dictate if the configured
       // policy managers are started or not.
       asyncCreateControlLink();
+   }
+
+   @Override
+   protected void handleFederationStarted() throws ActiveMQException {
+      // TODO: These should move to the policy manager themselves eventually
+      addressMatchPolicies.forEach((nname, policy) -> {
+         try {
+            registerAddressPolicyManagement(policy);
+         } catch (Exception e) {
+            logger.warn("Error while attempting to add address policy control to management", e);
+         }
+      });
+
+      queueMatchPolicies.forEach((nname, policy) -> {
+         try {
+            registerQueuePolicyManagement(policy);
+         } catch (Exception e) {
+            logger.warn("Error while attempting to add queue policy control to management", e);
+         }
+      });
+
+      super.handleFederationStarted();
+   }
+
+   @Override
+   protected void handleFederationStopped() throws ActiveMQException {
+      // TODO: These should move to the policy manager themselves eventually
+      addressMatchPolicies.forEach((nname, policy) -> {
+         try {
+            unregisterAddressPolicyManagement(policy);
+         } catch (Exception e) {
+            logger.warn("Error while attempting to remote address policy control to management", e);
+         }
+      });
+
+      queueMatchPolicies.forEach((nname, policy) -> {
+         try {
+            unregisterQueuePolicyManagement(policy);
+         } catch (Exception e) {
+            logger.warn("Error while attempting to remote queue policy control to management", e);
+         }
+      });
+
+      super.handleFederationStopped();
    }
 
    @Override

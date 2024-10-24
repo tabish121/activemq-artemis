@@ -127,6 +127,15 @@ public final class ObjectNameBuilder {
    }
 
    /**
+    * Returns the ObjectName used by BrokerConnectionControl.
+    *
+    * @see BrokerConnectionControl
+    */
+   public ObjectName getBrokerConnectionObjectName(String name) throws Exception {
+      return createObjectName("broker-connection", name);
+   }
+
+   /**
     * Returns the ObjectName used by BridgeControl.
     *
     * @see BridgeControl

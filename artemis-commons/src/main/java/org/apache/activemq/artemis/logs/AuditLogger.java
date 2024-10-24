@@ -2744,4 +2744,68 @@ public interface AuditLogger {
 
    @LogMessage(id = 601781, value = "User {} is getting authorization failure count on target resource: {}", level = LogMessage.Level.INFO)
    void getAuthorizationFailureCount(String user, Object source);
+
+   static void isConnected(Object source) {
+      BASE_LOGGER.isConnected(getCaller(), source);
+   }
+
+   @LogMessage(id = 601787, value = "User {} is querying isConnected on target resource: {}", level = LogMessage.Level.INFO)
+   void isConnected(String user, Object source);
+
+   static void getUri(Object source) {
+      BASE_LOGGER.getUri(getCaller(), source);
+   }
+
+   @LogMessage(id = 601788, value = "User {} is getting URI on target resource: {}", level = LogMessage.Level.INFO)
+   void getUri(String user, Object source);
+
+   static void getProtocol(Object source) {
+      BASE_LOGGER.getProtocol(getCaller(), source);
+   }
+
+   @LogMessage(id = 601789, value = "User {} is getting protocol on target resource: {}", level = LogMessage.Level.INFO)
+   void getProtocol(String user, Object source);
+
+   static void stopBrokerConnectionService(String name) {
+      BASE_LOGGER.stopBrokerConnectionService(getCaller(), name);
+   }
+
+   @LogMessage(id = 601790, value = "User {} is requesting to stop broker connection service {}", level = LogMessage.Level.INFO)
+   void stopBrokerConnectionService(String user, String name);
+
+   static void startBrokerConnectionService(String name) {
+      BASE_LOGGER.startBrokerConnection(getCaller(), name);
+   }
+
+   @LogMessage(id = 601791, value = "User {} is requesting to start broker connection service {}", level = LogMessage.Level.INFO)
+   void startBrokerConnectionService(String user, String name);
+
+   static void getType(Object source) {
+      BASE_LOGGER.getType(getCaller(), source);
+   }
+
+   @LogMessage(id = 601792, value = "User {} is getting the type on target resource: {}", level = LogMessage.Level.INFO)
+   void getType(String user, Object source);
+
+   static void getRole(Object source) {
+      BASE_LOGGER.getRole(getCaller(), source);
+   }
+
+   @LogMessage(id = 601793, value = "User {} is getting the role on target resource: {}", level = LogMessage.Level.INFO)
+   void getRole(String user, Object source);
+
+   static void getFqqn(Object source) {
+      BASE_LOGGER.getFqqn(getCaller(), source);
+   }
+
+   @LogMessage(id = 601794, value = "User {} is getting the FQQN on target resource: {}", level = LogMessage.Level.INFO)
+   void getFqqn(String user, Object source);
+
+   static void getPriority(Object source) {
+      BASE_LOGGER.getPriority(getCaller(), source);
+   }
+
+   @LogMessage(id = 601795, value = "User {} is getting the priority on target resource: {}", level = LogMessage.Level.INFO)
+   void getPriority(String user, Object source);
+
 }
