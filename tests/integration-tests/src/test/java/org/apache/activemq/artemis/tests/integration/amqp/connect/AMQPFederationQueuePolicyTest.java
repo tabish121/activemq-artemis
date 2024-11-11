@@ -1373,6 +1373,8 @@ public class AMQPFederationQueuePolicyTest extends AmqpClientTestSupport {
       }
    }
 
+   // TODO: Decide how to handle priority on queue consumers and then maybe port these tests to the bridge
+
    @Test
    @Timeout(20)
    public void testFederationCreatesQueueReceiverLinkWithDefaultPrioirty() throws Exception {
@@ -1541,6 +1543,8 @@ public class AMQPFederationQueuePolicyTest extends AmqpClientTestSupport {
          }
       }
    }
+
+   // TODO: See above
 
    @Test
    @Timeout(20)
