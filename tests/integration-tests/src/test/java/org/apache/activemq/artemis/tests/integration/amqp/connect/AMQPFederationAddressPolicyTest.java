@@ -220,7 +220,7 @@ public class AMQPFederationAddressPolicyTest extends AmqpClientTestSupport {
                                                           .setAddress("test")
                                                           .setAutoCreated(false));
 
-         Wait.assertTrue(() -> server.queueQuery(SimpleString.of("test")).isExists());
+         Wait.assertTrue(() -> server.queueQuery(SimpleString.of("test")).isExists(), 5000, 100);
 
          final ConnectionFactory factory = CFUtil.createConnectionFactory("AMQP", "tcp://localhost:" + AMQP_PORT);
 
@@ -2309,6 +2309,7 @@ public class AMQPFederationAddressPolicyTest extends AmqpClientTestSupport {
       }
    }
 
+   // TODO : Decide on Core and add these tests if tunneling is supported
    @Test
    @Timeout(20)
    public void testCoreMessageConvertedToAMQPWhenTunnelingDisabled() throws Exception {
@@ -2473,6 +2474,8 @@ public class AMQPFederationAddressPolicyTest extends AmqpClientTestSupport {
          server.stop();
       }
    }
+
+   //TODO : see above
 
    @Test
    @Timeout(20)
