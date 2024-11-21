@@ -539,4 +539,54 @@ public abstract class AMQPFederation implements FederationInternal {
          AMQPFederationManagementSupport.unregisterQueueConsumerControl(brokerConnectionName, manager, consumer);
       }
    }
+
+   // TODO: Work in progress register remote policy manager proxies and manager for federation senders
+
+   void registerRemoteAddressPolicyManagement(AMQPFederationAddressPolicyManager manager) throws Exception {
+      if (brokerConnectionName != null) {
+        //AMQPFederationManagementSupport.registerAddressPolicyControl(brokerConnectionName, manager);
+      }
+   }
+
+   void unregisterRemoteAddressPolicyManagement(AMQPFederationAddressPolicyManager manager) throws Exception {
+      if (brokerConnectionName != null) {
+         //AMQPFederationManagementSupport.unregisterAddressPolicyControl(brokerConnectionName, manager);
+      }
+   }
+
+   void registerRemoteAddressProducerManagement(AMQPFederationAddressPolicyManager manager, AMQPFederationAddressSenderController semder) throws Exception {
+      if (brokerConnectionName != null) {
+         //AMQPFederationManagementSupport.registerAddressProducerControl(brokerConnectionName, manager, sender);
+      }
+   }
+
+   void unregisterRemoteAddressProdcerManagement(AMQPFederationAddressPolicyManager manager, AMQPFederationAddressSenderController sender) throws Exception {
+      if (brokerConnectionName != null) {
+         //AMQPFederationManagementSupport.unregisterAddressProducerControl(brokerConnectionName, manager, sender);
+      }
+   }
+
+   void registerRemoteQueuePolicyManagement(AMQPFederationQueuePolicyManager manager) throws Exception {
+      if (brokerConnectionName != null) {
+         //AMQPFederationManagementSupport.registerQueuePolicyControl(brokerConnectionName, manager);
+      }
+   }
+
+   void unregisterRemoteQueuePolicyManagement(AMQPFederationQueuePolicyManager manager) throws Exception {
+      if (brokerConnectionName != null) {
+         //AMQPFederationManagementSupport.unregisterQueuePolicyControl(brokerConnectionName, manager);
+      }
+   }
+
+   void registerRemoteQueueProducerManagement(AMQPFederationQueuePolicyManager manager, AMQPFederationQueueSenderController sender) throws Exception {
+      if (brokerConnectionName != null) {
+         //AMQPFederationManagementSupport.registerQueueConsumerControl(brokerConnectionName, manager, sender);
+      }
+   }
+
+   void unregisterRemoteQueueProducerManagement(AMQPFederationQueuePolicyManager manager, AMQPFederationQueueSenderController sender) throws Exception {
+      if (brokerConnectionName != null) {
+         //AMQPFederationManagementSupport.unregisterQueueConsumerControl(brokerConnectionName, manager, sender);
+      }
+   }
 }

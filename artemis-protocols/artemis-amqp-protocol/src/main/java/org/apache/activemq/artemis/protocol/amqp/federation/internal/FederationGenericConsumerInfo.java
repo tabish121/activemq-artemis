@@ -20,12 +20,8 @@ package org.apache.activemq.artemis.protocol.amqp.federation.internal;
 import java.util.Objects;
 import java.util.UUID;
 
-import org.apache.activemq.artemis.api.config.ActiveMQDefaultConfiguration;
 import org.apache.activemq.artemis.api.core.RoutingType;
-import org.apache.activemq.artemis.protocol.amqp.federation.Federation;
 import org.apache.activemq.artemis.protocol.amqp.federation.FederationConsumerInfo;
-import org.apache.activemq.artemis.protocol.amqp.federation.FederationReceiveFromAddressPolicy;
-import org.apache.activemq.artemis.utils.CompositeAddress;
 
 /**
  * Information and identification class for Federation consumers created to federate
@@ -33,9 +29,6 @@ import org.apache.activemq.artemis.utils.CompositeAddress;
  * classes where equality and hashing support is needed.
  */
 public class FederationGenericConsumerInfo implements FederationConsumerInfo {
-
-   public static final String FEDERATED_QUEUE_PREFIX = "federated";
-   public static final String QUEUE_NAME_FORMAT_STRING = "${address}::${routeType}";
 
    private final Role role;
    private final String address;
@@ -56,34 +49,6 @@ public class FederationGenericConsumerInfo implements FederationConsumerInfo {
       this.fqqn = fqqn;
       this.priority = priority;
       this.id = UUID.randomUUID().toString();
-   }
-
-   /**
-    * Factory for creating federation address consumer information objects from server resources.
-    *
-    * @param address
-    *       The address being federated, the remote consumer will be created under this address.
-    * @param queueName
-    *       The name of the remote queue that will be created in order to route messages here.
-    * @param routingType
-    *       The routing type to assign the remote consumer.
-    * @param filterString
-    *       A filter string used by the federation instance to limit what enters the remote queue.
-    * @param federation
-    *       The parent {@link Federation} that this federation consumer is created for
-    * @param policy
-    *       The {@link FederationReceiveFromAddressPolicy} that triggered this information object to be created.
-    *
-    * @return a newly created and configured {@link FederationConsumerInfo} instance.
-    */
-   public static FederationGenericConsumerInfo build(String address, String queueName, RoutingType routingType, String filterString, Federation federation, FederationReceiveFromAddressPolicy policy) {
-      return new FederationGenericConsumerInfo(Role.ADDRESS_CONSUMER,
-                                               address,
-                                               queueName,
-                                               routingType,
-                                               filterString,
-                                               CompositeAddress.toFullyQualified(address, queueName),
-                                               ActiveMQDefaultConfiguration.getDefaultConsumerPriority());
    }
 
    @Override
