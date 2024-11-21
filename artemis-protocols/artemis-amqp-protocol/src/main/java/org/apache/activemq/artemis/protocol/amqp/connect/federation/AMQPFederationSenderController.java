@@ -18,24 +18,36 @@
 package org.apache.activemq.artemis.protocol.amqp.connect.federation;
 
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederation.FEDERATION_INSTANCE_RECORD;
+import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.QUEUE_CAPABILITY;
+import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.TOPIC_CAPABILITY;
+import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.verifyOfferedCapabilities;
 
 import java.util.Objects;
 import java.util.UUID;
 import java.util.function.Consumer;
 
+import org.apache.activemq.artemis.api.config.ActiveMQDefaultConfiguration;
 import org.apache.activemq.artemis.api.core.Message;
+import org.apache.activemq.artemis.api.core.RoutingType;
+import org.apache.activemq.artemis.core.server.ActiveMQServer;
 import org.apache.activemq.artemis.core.server.MessageReference;
+import org.apache.activemq.artemis.core.server.ServerConsumer;
 import org.apache.activemq.artemis.protocol.amqp.broker.AMQPMessage;
 import org.apache.activemq.artemis.protocol.amqp.broker.AMQPSessionCallback;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPException;
+import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPIllegalStateException;
+import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPNotImplementedException;
 import org.apache.activemq.artemis.protocol.amqp.proton.AMQPLargeMessageWriter;
 import org.apache.activemq.artemis.protocol.amqp.proton.AMQPMessageWriter;
 import org.apache.activemq.artemis.protocol.amqp.proton.AMQPSessionContext;
 import org.apache.activemq.artemis.protocol.amqp.proton.AMQPTunneledCoreLargeMessageWriter;
 import org.apache.activemq.artemis.protocol.amqp.proton.AMQPTunneledCoreMessageWriter;
+import org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport;
 import org.apache.activemq.artemis.protocol.amqp.proton.MessageWriter;
 import org.apache.activemq.artemis.protocol.amqp.proton.ProtonServerSenderContext;
 import org.apache.activemq.artemis.protocol.amqp.proton.SenderController;
+import org.apache.qpid.proton.amqp.Symbol;
+import org.apache.qpid.proton.amqp.messaging.Source;
 import org.apache.qpid.proton.amqp.transport.AmqpError;
 import org.apache.qpid.proton.amqp.transport.ErrorCondition;
 import org.apache.qpid.proton.engine.Connection;
@@ -45,7 +57,19 @@ import org.apache.qpid.proton.engine.Sender;
  * A base class abstract {@link SenderController} implementation for use by federation address and
  * queue senders that provides some common functionality used between both.
  */
-public abstract class AMQPFederationBaseSenderController implements SenderController {
+public abstract class AMQPFederationSenderController implements SenderController {
+
+   public enum Role {
+      /**
+       * Producer created from a remote server based on a match for configured address federation policy.
+       */
+      ADDRESS_PRODUCER,
+
+      /**
+       * Producer created from a remote server based on a match for configured queue federation policy.
+       */
+      QUEUE_PRODUCER
+   }
 
    protected final AMQPSessionContext session;
    protected final AMQPSessionCallback sessionSPI;
@@ -56,18 +80,32 @@ public abstract class AMQPFederationBaseSenderController implements SenderContro
    protected AMQPLargeMessageWriter largeMessageWriter;
    protected AMQPTunneledCoreMessageWriter coreMessageWriter;
    protected AMQPTunneledCoreLargeMessageWriter coreLargeMessageWriter;
+   protected ProtonServerSenderContext senderContext;
 
    protected boolean tunnelCoreMessages; // only enabled if remote offers support.
 
    protected Consumer<ErrorCondition> resourceDeletedAction;
 
-   public AMQPFederationBaseSenderController(AMQPSessionContext session) throws ActiveMQAMQPException {
+   public AMQPFederationSenderController(AMQPSessionContext session) throws ActiveMQAMQPException {
       final Connection protonConnection = session.getSession().getConnection();
       final org.apache.qpid.proton.engine.Record attachments = protonConnection.attachments();
 
       this.federation = attachments.get(FEDERATION_INSTANCE_RECORD, AMQPFederation.class);
       this.session = session;
       this.sessionSPI = session.getSessionSPI();
+   }
+
+   /**
+    * @return an enumeration describing the role of the sender controller implementation.
+    */
+   public abstract Role getRole();
+
+   public int getMessagesSent() {
+      return 0; // TODO
+   }
+
+   public ActiveMQServer getServer() {
+      return session.getServer();
    }
 
    public AMQPSessionContext getSessionContext() {
@@ -79,35 +117,87 @@ public abstract class AMQPFederationBaseSenderController implements SenderContro
    }
 
    @Override
-   public final void close() throws Exception {
-      if (federation != null) {
-         federation.removeLinkClosedInterceptor(controllerId);
+   public final ServerConsumer init(ProtonServerSenderContext senderContext) throws Exception {
+      final Sender sender = senderContext.getSender();
+      final Source source = (Source) sender.getRemoteSource();
+
+      if (federation == null) {
+         throw new ActiveMQAMQPIllegalStateException("Cannot create a federation link from non-federation connection");
       }
 
-      handleLinkRemotelyClosed();
+      if (source == null) {
+         throw new ActiveMQAMQPNotImplementedException("Null source lookup not supported on federation links.");
+      }
+
+      this.senderContext = senderContext;
+
+      // We need to check that the remote offers ability to read tunneled core messages and
+      // if not we must not send them but instead convert all messages to AMQP messages first.
+      tunnelCoreMessages = verifyOfferedCapabilities(sender, AmqpSupport.CORE_MESSAGE_TUNNELING_SUPPORT);
+
+      final ServerConsumer consumer = createServerConsumer(senderContext);
+
+      registerRemoteLinkClosedInterceptor(sender);
+
+      return consumer;
    }
 
+   /**
+    * The subclass must implement this and create an appropriately configured server consumer
+    * based on the properties of the AMQP link and the role of the implemented sender type.
+    *
+    * @param senderContext
+    *    The server sender context that this controller was created for.
+    *
+    * @return a new {@link ServerConsumer} instance that will send messages to the remote peer.
+    *
+    * @throws Exception if an error occurs while creating the server consumer.
+    */
+   protected abstract ServerConsumer createServerConsumer(ProtonServerSenderContext senderContext) throws Exception;
+
+   @Override
+   public final void close() throws Exception {
+      try {
+         if (federation != null) {
+            federation.removeLinkClosedInterceptor(controllerId);
+         }
+      } finally {
+         handleLinkRemotelyClosed();
+      }
+   }
+
+   /**
+    * Subclasses should react to link remote close by cleaning up any resources
+    */
    protected void handleLinkRemotelyClosed() {
-      // Default does nothing.
+      // default implementation does nothing
    }
 
    @Override
    public final void close(ErrorCondition error) {
-      if (error != null && AmqpError.RESOURCE_DELETED.equals(error.getCondition())) {
-         if (resourceDeletedAction != null) {
-            resourceDeletedAction.accept(error);
+      try {
+         if (error != null && AmqpError.RESOURCE_DELETED.equals(error.getCondition())) {
+            if (resourceDeletedAction != null) {
+               resourceDeletedAction.accept(error);
+            }
          }
-      }
 
-      if (federation != null) {
-         federation.removeLinkClosedInterceptor(controllerId);
+         if (federation != null) {
+            federation.removeLinkClosedInterceptor(controllerId);
+         }
+      } finally {
+         handleLinkLocallyClosed(error);
       }
-
-      handleLinkLocallyClosed(error);
    }
 
+   /**
+    * Subclasses should react to link local close by cleaning up resources.
+    *
+    * @param error
+    *       The error that triggered the local close or null if no error.
+    */
    protected void handleLinkLocallyClosed(ErrorCondition error) {
-      // Default does nothing.
+      // default implementation does nothing
    }
 
    @Override
@@ -140,7 +230,7 @@ public abstract class AMQPFederationBaseSenderController implements SenderContro
    }
 
    protected final void registerRemoteLinkClosedInterceptor(Sender protonSender) {
-      Objects.requireNonNull(federation, "Subclass should have validated federation state before adding an interceptor");
+      Objects.requireNonNull(federation, "Initialization should have validated federation state before adding an interceptor");
 
       federation.addLinkClosedInterceptor(controllerId, (link) -> {
          // Normal close from remote due to demand being removed is handled here but remote close with an error is left
@@ -151,5 +241,21 @@ public abstract class AMQPFederationBaseSenderController implements SenderContro
 
          return false;
       });
+   }
+
+   protected static RoutingType getRoutingType(Source source) {
+      if (source != null) {
+         if (source.getCapabilities() != null) {
+            for (Symbol capability : source.getCapabilities()) {
+               if (TOPIC_CAPABILITY.equals(capability)) {
+                  return RoutingType.MULTICAST;
+               } else if (QUEUE_CAPABILITY.equals(capability)) {
+                  return RoutingType.ANYCAST;
+               }
+            }
+         }
+      }
+
+      return ActiveMQDefaultConfiguration.getDefaultRoutingType();
    }
 }

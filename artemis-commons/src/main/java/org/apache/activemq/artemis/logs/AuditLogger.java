@@ -2801,4 +2801,11 @@ public interface AuditLogger {
    @LogMessage(id = 601789, value = "User {} is getting the number of messages received on target resource: {}", level = LogMessage.Level.INFO)
    void getMessagesReceived(String user, Object source);
 
+   static void getMessagesSent(Object source) {
+      BASE_LOGGER.getMessagesSent(getCaller(), source);
+   }
+
+   @LogMessage(id = 601790, value = "User {} is getting the number of messages sent on target resource: {}", level = LogMessage.Level.INFO)
+   void getMessagesSent(String user, Object source);
+
 }
