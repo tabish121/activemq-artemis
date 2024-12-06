@@ -31,6 +31,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
+import java.util.function.Consumer;
+
 import org.apache.activemq.artemis.api.core.ActiveMQException;
 import org.apache.activemq.artemis.api.core.Message;
 import org.apache.activemq.artemis.api.core.RoutingType;
@@ -149,7 +151,7 @@ public class AMQPFederationQueueConsumer extends AMQPFederationConsumer {
    @Override
    protected void asyncCreateReceiver() {
       connection.runLater(() -> {
-         if (closed) {
+         if (state == ConsumerState.CLOSED) {
             return;
          }
 
@@ -262,6 +264,40 @@ public class AMQPFederationQueueConsumer extends AMQPFederationConsumer {
    }
 
    @Override
+   protected void asyncStartReceiver() {
+      connection.runLater(() -> {
+         if (state == ConsumerState.CLOSED) {
+            return;
+         }
+
+         try {
+            receiver.start();
+         } catch (Exception ex) {
+            logger.debug("Caught error trying to start an existing receiver:", ex);
+         }
+
+         connection.flush();
+      });
+   }
+
+   @Override
+   protected void asyncStopReceiver(Consumer<Boolean> onStopped) {
+      connection.runLater(() -> {
+         if (state == ConsumerState.CLOSED) {
+            return;
+         }
+
+         try {
+            receiver.stop(configuration.getReceiverQuiesceTimeout(), (recvr, stopped) -> onStopped.accept(stopped));
+         } catch (Exception ex) {
+            logger.debug("Caught error trying to stop an existing receiver:", ex);
+         }
+
+         connection.flush();
+      });
+   }
+
+   @Override
    protected final void asyncCloseReceiver() {
       connection.runLater(() -> {
          federation.removeLinkClosedInterceptor(consumerInfo.getId());
@@ -270,6 +306,7 @@ public class AMQPFederationQueueConsumer extends AMQPFederationConsumer {
             try {
                receiver.close(false);
             } catch (ActiveMQAMQPException e) {
+               logger.trace("Supporessed exception while closing federation receiver");
             } finally {
                receiver = null;
             }
@@ -401,7 +438,7 @@ public class AMQPFederationQueueConsumer extends AMQPFederationConsumer {
             logger.debug("Error caught when trying to add federation queue consumer to management", e);
          }
 
-         flow();
+         topUpCreditIfNeeded();
       }
 
       @Override
@@ -509,8 +546,8 @@ public class AMQPFederationQueueConsumer extends AMQPFederationConsumer {
       private void performCreditTopUp() {
          connection.requireInHandler();
 
-         if (receiver.getLocalState() != EndpointState.ACTIVE) {
-            return; // Closed before this was triggered.
+         if (!isStarted() || receiver.getLocalState() != EndpointState.ACTIVE) {
+            return; // Closed or stopped before this was triggered.
          }
 
          receiver.flow(configuration.getPullReceiverBatchSize());

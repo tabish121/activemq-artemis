@@ -20,6 +20,7 @@ import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.DETAC
 import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.NOT_FOUND;
 import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.RESOURCE_DELETED;
 
+import java.lang.invoke.MethodHandles;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
@@ -37,11 +38,15 @@ import org.apache.qpid.proton.amqp.messaging.Rejected;
 import org.apache.qpid.proton.amqp.messaging.Released;
 import org.apache.qpid.proton.engine.Link;
 import org.apache.qpid.proton.engine.Receiver;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Base class for AMQP Federation consumers that implements some of the common functionality.
  */
 public abstract class AMQPFederationConsumer implements FederationConsumerInternal {
+
+   private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
    protected static final Symbol[] OUTCOMES = new Symbol[]{Accepted.DESCRIPTOR_SYMBOL, Rejected.DESCRIPTOR_SYMBOL,
                                                            Released.DESCRIPTOR_SYMBOL, Modified.DESCRIPTOR_SYMBOL};
@@ -50,6 +55,14 @@ public abstract class AMQPFederationConsumer implements FederationConsumerIntern
    static {
       DEFAULT_OUTCOME = new Modified();
       DEFAULT_OUTCOME.setDeliveryFailed(true);
+   }
+
+   protected enum ConsumerState {
+      NEW,
+      STARTED,
+      STOPPING,
+      STOPPED,
+      CLOSED
    }
 
    protected final AMQPFederation federation;
@@ -62,8 +75,7 @@ public abstract class AMQPFederationConsumer implements FederationConsumerIntern
    protected final AtomicLong messageCount = new AtomicLong();
 
    protected Receiver protonReceiver;
-   protected boolean started;
-   protected volatile boolean closed;
+   protected volatile ConsumerState state = ConsumerState.NEW;
    protected Consumer<FederationConsumerInternal> remoteCloseHandler;
 
    public AMQPFederationConsumer(AMQPFederation federation, AMQPFederationConsumerConfiguration configuration,
@@ -96,26 +108,83 @@ public abstract class AMQPFederationConsumer implements FederationConsumerIntern
 
    @Override
    public final synchronized void start() {
-      if (!started && !closed) {
-         started = true;
+      if (state == ConsumerState.CLOSED) {
+         throw new IllegalStateException("Cannot start a consumer that was already closed.");
+      }
+
+      if (state == ConsumerState.STOPPING) {
+         throw new IllegalStateException("Cannot start a consumer that is currently stopping.");
+      }
+
+      if (state == ConsumerState.NEW) {
+         state = ConsumerState.STARTED;
          asyncCreateReceiver();
+      } else {
+         state = ConsumerState.STARTED;
+         asyncStartReceiver();
       }
    }
 
    @Override
+   public final boolean isStarted() {
+      return state == ConsumerState.STARTED;
+   }
+
+   @Override
+   public final synchronized void stop(Consumer<Boolean> onStopped) {
+      if (state != ConsumerState.STARTED) {
+         throw new IllegalStateException("Cannot trigger a stop on a not started consumer");
+      }
+
+      state = ConsumerState.STOPPING;
+
+      asyncStopReceiver((stopped) -> {
+         // Take the lock to prevent overlap of start calls that are not triggered
+         // from the provided stopped callback. A call to start in the callback will
+         // be able to complete without issue.
+         synchronized (this) {
+            if (stopped) {
+               state = ConsumerState.STOPPED;
+            }
+
+            try {
+               onStopped.accept(stopped);
+            } catch (Exception ex) {
+               logger.trace("Caught error running provided on stopped callback: ", ex);
+            }
+         }
+      });
+   }
+
+   @Override
+   public boolean isStopping() {
+      return state == ConsumerState.STOPPING;
+   }
+
+   @Override
+   public boolean isStopped() {
+      return state == ConsumerState.STOPPED;
+   }
+
+   @Override
    public final synchronized void close() {
-      if (!closed) {
-         closed = true;
-         if (started) {
-            started = false;
+      if (state != ConsumerState.CLOSED) {
+         state = ConsumerState.CLOSED;
+
+         if (state != ConsumerState.NEW) {
             asyncCloseReceiver();
          }
       }
    }
 
    @Override
+   public final boolean isClosed() {
+      return state == ConsumerState.CLOSED;
+   }
+
+   @Override
    public final AMQPFederationConsumer setRemoteClosedHandler(Consumer<FederationConsumerInternal> handler) {
-      if (started) {
+      if (state != ConsumerState.NEW) {
          throw new IllegalStateException("Cannot set a remote close handler after the consumer is started");
       }
 
@@ -162,9 +231,29 @@ public abstract class AMQPFederationConsumer implements FederationConsumerIntern
 
    /**
     * Called during the start of the consumer to trigger an asynchronous link attach
-    * of the underlying AMQP receiver that backs this federation consumer.
+    * of the underlying AMQP receiver that backs this federation consumer. The new
+    * receiver should be created in a started state.
     */
    protected abstract void asyncCreateReceiver();
+
+   /**
+    * Called during the re-start of the consumer to trigger an asynchronous flow of
+    * credit to the underlying AMQP receiver that backs this federation consumer.
+    */
+   protected abstract void asyncStartReceiver();
+
+   /**
+    * Called during the stop of the consumer to trigger an asynchronous stop of
+    * the underlying AMQP receiver that backs this federation consumer, the stop
+    * needs to wait for credit to be drained and in-flight messages to be settled.
+    * The supplied {@link Consumer} will be passed a boolean <code>true</code> if
+    * the stop completed successfully or <code>false</code> if the stop request
+    * timed out.
+    *
+    * @param onStopped
+    *    A {@link Consumer} that will be called to signal the stop completed or timed out.
+    */
+   protected abstract void asyncStopReceiver(Consumer<Boolean> onStopped);
 
    /**
     * Called during the close of the consumer to trigger an asynchronous link detach

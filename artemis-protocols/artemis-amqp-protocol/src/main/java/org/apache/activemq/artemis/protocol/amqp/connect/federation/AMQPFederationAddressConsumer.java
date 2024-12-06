@@ -35,6 +35,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
+import java.util.function.Consumer;
 
 import org.apache.activemq.artemis.api.core.ActiveMQException;
 import org.apache.activemq.artemis.api.core.ICoreMessage;
@@ -158,7 +159,7 @@ public class AMQPFederationAddressConsumer extends AMQPFederationConsumer {
    @Override
    protected final void asyncCreateReceiver() {
       connection.runLater(() -> {
-         if (closed) {
+         if (state == ConsumerState.CLOSED) {
             return;
          }
 
@@ -272,6 +273,40 @@ public class AMQPFederationAddressConsumer extends AMQPFederationConsumer {
             });
          } catch (Exception e) {
             federation.signalError(e);
+         }
+
+         connection.flush();
+      });
+   }
+
+   @Override
+   protected void asyncStartReceiver() {
+      connection.runLater(() -> {
+         if (state == ConsumerState.CLOSED) {
+            return;
+         }
+
+         try {
+            receiver.start();
+         } catch (Exception ex) {
+            logger.debug("Caught error trying to start an existing receiver:", ex);
+         }
+
+         connection.flush();
+      });
+   }
+
+   @Override
+   protected void asyncStopReceiver(Consumer<Boolean> onStopped) {
+      connection.runLater(() -> {
+         if (state == ConsumerState.CLOSED) {
+            return;
+         }
+
+         try {
+            receiver.stop(configuration.getReceiverQuiesceTimeout(), (recvr, stopped) -> onStopped.accept(stopped));
+         } catch (Exception ex) {
+            logger.debug("Caught error trying to stop an existing receiver:", ex);
          }
 
          connection.flush();
@@ -446,7 +481,7 @@ public class AMQPFederationAddressConsumer extends AMQPFederationConsumer {
             logger.debug("Error caught when trying to add federation address consumer to management", e);
          }
 
-         flow();
+         topUpCreditIfNeeded();
       }
 
       @Override
