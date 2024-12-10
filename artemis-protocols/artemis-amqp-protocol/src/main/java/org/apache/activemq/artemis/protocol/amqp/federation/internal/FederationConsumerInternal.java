@@ -28,19 +28,76 @@ import org.apache.activemq.artemis.protocol.amqp.federation.FederationConsumer;
 public interface FederationConsumerInternal extends FederationConsumer {
 
    /**
-    * Starts the consumer instance which includes creating the remote resources
+    * Starts the consumer instance which can include creating the remote resources
     * and performing any internal initialization needed to fully establish the
-    * consumer instance. This call should not block and any errors encountered
+    * consumer instance or simply signaling the remote that messages will be
+    * accepted once more. This call should not block and any errors encountered
     * on creation of the backing consumer resources should utilize the error
     * handling mechanisms of this {@link Federation} instance.
+    * <p>
+    * Calling start on an already started consumer should have no effect.
+    * Calling start on a stopping consumer should throw an {@link IllegalStateException}.
+    * Calling start on a closed consumer should throw an {@link IllegalStateException}.
+    *
+    * @throws IllegalStateException if start is called on an stopping or closed consumer.
     */
    void start();
 
    /**
+    * @return <code>true</code> if the consumer is currently started.
+    */
+   boolean isStarted();
+
+   /**
+    * Stops message consumption on this consumer instance but leaves the consumer
+    * in a state where it could be restarted by a call to {@link #start()} once
+    * the consumer enters the stopped state.
+    * <p>
+    * Since the request to stop can take time to complete and this method cannot
+    * block a callback must be provided by the caller that will respond when the
+    * consumer has fully come to rest and all pending work is complete. Before the
+    * stopped callback is signaled the state of the consumer will be stopping, and
+    * afterwards the state will be stopped. A call to start the consumer while in
+    * the stopping state should throw an exception as the outcome of the stop is not
+    * yet known. A call to {@link #stop(Consumer)} in any state other than in the
+    * started state should throw an exception since the callers callback can not
+    * be signaled if the state is already stopping, stopped or closed.
+    * <p>
+    * The supplied {@link Consumer} will be provided a boolean <code>true</code> if
+    * the stop operation succeeded or <code>false</code> if the operation timed out.
+    * A timed out stop should leave the receiver in a stopping state preventing the
+    * owner from restarting the receiver again as the remote state is now considered
+    * unknown.
+    *
+    * @param onStopped
+    *       A {@link Consumer} that will be run when the consumer has fully stopped or has timed out.
+    *
+    * @throws IllegalStateException if {@link #isStarted()} does not return <code>true</code>.
+    */
+   void stop(Consumer<Boolean> onStopped);
+
+   /**
+    * @return <code>true</code> if the consumer is in the process of stopping due to a call to {@link #stop(Consumer)}.
+    */
+   boolean isStopping();
+
+   /**
+    * @return <code>true</code> if the consumer has stopped due to a previous call to {@link #stop(Consumer)}.
+    */
+   boolean isStopped();
+
+   /**
     * Close the federation consumer instance and cleans up its resources. This method
-    * should not block and the actual resource shutdown work should occur asynchronously.
+    * should not block and the actual resource shutdown work should occur asynchronously
+    * however the closed state should be indicated immediately and any further attempts
+    * start the consumer should result in an exception being thrown.
     */
    void close();
+
+   /**
+    * @return <code>true</code> if the consumer has been closed by a call to {@link #close()}.
+    */
+   boolean isClosed();
 
    /**
     * Provides and event point for notification of the consumer having been closed by

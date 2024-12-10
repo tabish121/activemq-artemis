@@ -97,11 +97,14 @@ public class FederationQueueEntry {
    /**
     * Clears the currently assigned consumer from this entry.
     *
-    * @return this federation queue consumer entry.
+    * @return the consumer that was stored here previously or null if none was set
     */
-   public FederationQueueEntry clearConsumer() {
+   public FederationConsumerInternal clearConsumer() {
+      final FederationConsumerInternal taken = consumer;
+
       this.consumer = null;
-      return this;
+
+      return taken;
    }
 
    /**
@@ -134,6 +137,16 @@ public class FederationQueueEntry {
     */
    public FederationQueueEntry removeDemand(ServerConsumer consumer) {
       consumerDemand.remove(identifyConsumer(consumer));
+      return this;
+   }
+
+   /**
+    * Remove all known demand on the resource from any previously added {@link ServerConsumer}s.
+    *
+    * @return this federation queue entry instance.
+    */
+   public FederationQueueEntry removeAllDemand() {
+      consumerDemand.clear();
       return this;
    }
 

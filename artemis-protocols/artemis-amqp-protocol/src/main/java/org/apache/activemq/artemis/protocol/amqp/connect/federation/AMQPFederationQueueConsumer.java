@@ -29,17 +29,12 @@ import java.util.Map;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BiConsumer;
-import org.apache.activemq.artemis.api.core.ActiveMQException;
 import org.apache.activemq.artemis.api.core.Message;
 import org.apache.activemq.artemis.api.core.RoutingType;
 import org.apache.activemq.artemis.api.core.SimpleString;
-import org.apache.activemq.artemis.core.config.TransformerConfiguration;
-import org.apache.activemq.artemis.core.server.ActiveMQServerLogger;
 import org.apache.activemq.artemis.core.server.Queue;
 import org.apache.activemq.artemis.core.server.QueueQueryResult;
-import org.apache.activemq.artemis.core.server.transformer.Transformer;
 import org.apache.activemq.artemis.core.transaction.Transaction;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPException;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPInternalErrorException;
@@ -81,31 +76,17 @@ public class AMQPFederationQueueConsumer extends AMQPFederationConsumer {
    public static final int DEFAULT_PENDING_MSG_CHECK_BACKOFF_MULTIPLIER = 2;
    public static final int DEFAULT_PENDING_MSG_CHECK_MAX_DELAY = 30;
 
-   // Sequence ID value used to keep links that would otherwise have the same name from overlapping
-   // this generally occurs when consumers on the same queue have differing filters.
-   private static final AtomicLong LINK_SEQUENCE_ID = new AtomicLong();
-
    private final AMQPFederationQueuePolicyManager manager;
    private final FederationReceiveFromQueuePolicy policy;
-   private final Transformer transformer;
-
-   private AMQPFederatedQueueDeliveryReceiver receiver;
 
    public AMQPFederationQueueConsumer(AMQPFederationQueuePolicyManager manager,
                                       AMQPFederationConsumerConfiguration configuration,
                                       AMQPSessionContext session, FederationConsumerInfo consumerInfo,
                                       BiConsumer<FederationConsumerInfo, Message> messageObserver) {
-      super(manager.getFederation(), configuration, session, consumerInfo, messageObserver);
+      super(manager.getFederation(), configuration, session, consumerInfo, manager.getPolicy(), messageObserver);
 
       this.manager = manager;
       this.policy = manager.getPolicy();
-
-      final TransformerConfiguration transformerConfiguration = policy.getTransformerConfiguration();
-      if (transformerConfiguration != null) {
-         this.transformer = federation.getServer().getServiceRegistry().getFederationTransformer(policy.getPolicyName(), transformerConfiguration);
-      } else {
-         this.transformer = (m) -> m;
-      }
    }
 
    /**
@@ -113,30 +94,6 @@ public class AMQPFederationQueueConsumer extends AMQPFederationConsumer {
     */
    public FederationReceiveFromQueuePolicy getPolicy() {
       return policy;
-   }
-
-   private void signalBeforeFederationConsumerMessageHandled(Message message) throws ActiveMQException {
-      try {
-         federation.getServer().callBrokerAMQPFederationPlugins((plugin) -> {
-            if (plugin instanceof ActiveMQServerAMQPFederationPlugin) {
-               ((ActiveMQServerAMQPFederationPlugin) plugin).beforeFederationConsumerMessageHandled(this, message);
-            }
-         });
-      } catch (ActiveMQException t) {
-         ActiveMQServerLogger.LOGGER.federationPluginExecutionError("beforeFederationConsumerMessageHandled", t);
-      }
-   }
-
-   private void signalAfterFederationConsumerMessageHandled(Message message) throws ActiveMQException {
-      try {
-         federation.getServer().callBrokerAMQPFederationPlugins((plugin) -> {
-            if (plugin instanceof ActiveMQServerAMQPFederationPlugin) {
-               ((ActiveMQServerAMQPFederationPlugin) plugin).afterFederationConsumerMessageHandled(this, message);
-            }
-         });
-      } catch (ActiveMQException t) {
-         ActiveMQServerLogger.LOGGER.federationPluginExecutionError("afterFederationConsumerMessageHandled", t);
-      }
    }
 
    private String generateLinkName() {
@@ -149,7 +106,7 @@ public class AMQPFederationQueueConsumer extends AMQPFederationConsumer {
    @Override
    protected void asyncCreateReceiver() {
       connection.runLater(() -> {
-         if (closed) {
+         if (state == ConsumerState.CLOSED) {
             return;
          }
 
@@ -255,35 +212,6 @@ public class AMQPFederationQueueConsumer extends AMQPFederationConsumer {
             });
          } catch (Exception e) {
             federation.signalError(e);
-         }
-
-         connection.flush();
-      });
-   }
-
-   @Override
-   protected final void asyncCloseReceiver() {
-      connection.runLater(() -> {
-         federation.removeLinkClosedInterceptor(consumerInfo.getId());
-
-         if (receiver != null) {
-            try {
-               receiver.close(false);
-            } catch (ActiveMQAMQPException e) {
-            } finally {
-               receiver = null;
-            }
-         }
-
-         // Need to track the proton receiver and close it here as the default
-         // context implementation doesn't do that and could result in no detach
-         // being sent in some cases and possible resources leaks.
-         if (protonReceiver != null) {
-            try {
-               protonReceiver.close();
-            } finally {
-               protonReceiver = null;
-            }
          }
 
          connection.flush();
@@ -401,7 +329,7 @@ public class AMQPFederationQueueConsumer extends AMQPFederationConsumer {
             logger.debug("Error caught when trying to add federation queue consumer to management", e);
          }
 
-         flow();
+         topUpCreditIfNeeded();
       }
 
       @Override
@@ -509,8 +437,8 @@ public class AMQPFederationQueueConsumer extends AMQPFederationConsumer {
       private void performCreditTopUp() {
          connection.requireInHandler();
 
-         if (receiver.getLocalState() != EndpointState.ACTIVE) {
-            return; // Closed before this was triggered.
+         if (!isStarted() || receiver.getLocalState() != EndpointState.ACTIVE) {
+            return; // Closed or stopped before this was triggered.
          }
 
          receiver.flow(configuration.getPullReceiverBatchSize());
