@@ -20,9 +20,13 @@ package org.apache.activemq.artemis.protocol.amqp.federation.internal;
 import static org.apache.activemq.artemis.protocol.amqp.federation.FederationConstants.FEDERATION_NAME;
 
 import java.lang.invoke.MethodHandles;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 
 import org.apache.activemq.artemis.api.core.ActiveMQException;
@@ -98,19 +102,40 @@ public abstract class FederationQueuePolicyManager extends FederationPolicyManag
     * active for local queue demand. Stop should generally be called whenever the parent
     * {@link Federation} loses its connection to the remote.
     */
-   public synchronized void stop() {
-      if (started) {
-         // Ensures that on shutdown of a federation broker connection we don't leak
-         // broker plugin instances.
-         server.unRegisterBrokerPlugin(this);
-         started = false;
-         demandTracking.forEach((k, v) -> {
-            if (v.hasConsumer()) {
-               v.getConsumer().close();
-            }
-         });
-         demandTracking.clear();
+   public void stop() {
+      final Collection<FederationConsumerInternal> consumers;
+
+      synchronized (this) {
+         if (started) {
+            // Ensures that on shutdown of a federation broker connection we don't leak
+            // broker plugin instances.
+            server.unRegisterBrokerPlugin(this);
+            started = false;
+            consumers = new ArrayList<>(demandTracking.size());
+            demandTracking.values().forEach((entry) -> {
+               if (entry != null && entry.removeAllDemand().hasConsumer()) {
+                  consumers.add(entry.clearConsumer());
+               }
+            });
+            demandTracking.clear();
+         } else {
+            consumers = Collections.emptyList();
+         }
       }
+
+      // Close these outside the instance lock as there could be races on remote close
+      // or pending stops that deadlock calling into this manager in the opposite direction.
+      // We've unlinked them from any state tracking that was previously held that might
+      // cause a stopped instance from attempting to restart itself.
+      consumers.forEach((consumer) -> {
+         if (consumer != null) {
+            try {
+               consumer.close();
+            } catch (Exception ex) {
+               logger.trace("Igored exception on close of federation consumer during policy stop: ", ex);
+            }
+         }
+      });
    }
 
    @Override
@@ -136,30 +161,86 @@ public abstract class FederationQueuePolicyManager extends FederationPolicyManag
          logger.trace("Reducing demand on federated queue {}, remaining demand? {}", queueName, entry.hasDemand());
 
          if (!entry.hasDemand() && entry.hasConsumer()) {
-            final FederationConsumerInternal federationConsuner = entry.getConsumer();
-
-            try {
-               signalBeforeCloseFederationConsumer(federationConsuner);
-               federationConsuner.close();
-               signalAfterCloseFederationConsumer(federationConsuner);
-            } finally {
-               demandTracking.remove(consumerInfo);
+            // A started consumer should be allowed to stop before possible close either because demand
+            // is still not present or the remote did not respond before the configured stop timeout elapsed.
+            // A successfully stopped receiver can be restarted but if the stop times out the receiver should
+            // be closed and a new receiver created if demand is present.
+            if (entry.getConsumer().isStarted()) {
+               entry.getConsumer().stop((didStop) -> handleFederationConsumerStopped(consumer.getQueue(), entry, didStop));
             }
          }
       }
    }
 
    @Override
-   public synchronized void afterRemoveBinding(Binding binding, Transaction tx, boolean deleteData) throws ActiveMQException {
+   public void afterRemoveBinding(Binding binding, Transaction tx, boolean deleteData) throws ActiveMQException {
       if (binding instanceof QueueBinding) {
          final QueueBinding queueBinding = (QueueBinding) binding;
          final String queueName = queueBinding.getQueue().getName().toString();
+         final AtomicReference<FederationConsumerInternal> capture = new AtomicReference<>();
 
-         demandTracking.values().forEach((entry) -> {
-            if (entry.getConsumerInfo().getQueueName().equals(queueName) && entry.hasConsumer()) {
-               entry.getConsumer().close();
+         synchronized (this) {
+            demandTracking.values().removeIf((entry) -> {
+               if (entry.getConsumerInfo().getQueueName().equals(queueName) && entry.hasConsumer()) {
+                  logger.trace("Federated queue {} was remvoed, closing federation consumer", queueName);
+
+                  // Capture the consumer and remove any tracked demand from the entry to
+                  // ensure that a stop that was in progress doesn't attempt to recreate
+                  // the consumer as it will report no demand and no longer carry a consumer.
+                  capture.set(entry.removeAllDemand().clearConsumer());
+
+                  return true;
+               } else {
+                  return false;
+               }
+            });
+         }
+
+         final FederationConsumerInternal federationConsuner = capture.get();
+
+         // Demand is gone because the Queue binding is gone and any in-flight messages
+         // can be allowed to be released back to the remote as they will not be processed.
+         // We removed the consumer information from demand tracking to prevent build up
+         // of data for entries that may never return and to prevent interference from the
+         // next set of events which will be the close of all local consumers for this now
+         // removed Queue.
+         if (federationConsuner != null) {
+            try {
+               signalBeforeCloseFederationConsumer(federationConsuner);
+               federationConsuner.close();
+               signalAfterCloseFederationConsumer(federationConsuner);
+            } catch (Exception ex) {
+               logger.trace("Error suppressed during close of consumer for removed Queue: ", ex);
             }
-         });
+         }
+      }
+   }
+
+   private void handleFederationConsumerStopped(Queue queue, FederationQueueEntry entry, boolean didStop) {
+      final FederationConsumerInternal federationConsuner = entry.getConsumer();
+
+      // Remote close or local queue remove could have beaten us here and already cleaned up the consumer.
+      if (federationConsuner != null) {
+         if (!didStop || !entry.hasDemand()) {
+            entry.clearConsumer();
+
+            try {
+               signalBeforeCloseFederationConsumer(federationConsuner);
+               federationConsuner.close();
+               signalAfterCloseFederationConsumer(federationConsuner);
+            } catch (Exception ex) {
+               logger.trace("Error suppressed during close of consumer after stopped: ", ex);
+            }
+         }
+
+         // Demand may have returned while the consumer was stopping in which case
+         // we either restart an existing stopped consumer or recreate if the stop
+         // timed out and we closed it due to the stop having timed out.
+         if (entry.hasDemand()) {
+            tryCreateFederationConsumerForQueue(entry, queue);
+         } else {
+            demandTracking.remove(entry.getConsumerInfo());
+         }
       }
    }
 
@@ -214,36 +295,67 @@ public abstract class FederationQueuePolicyManager extends FederationPolicyManag
    }
 
    private void tryCreateFederationConsumerForQueue(FederationQueueEntry queueEntry, Queue queue) {
-      if (queueEntry.hasDemand() && !queueEntry.hasConsumer() && !isPluginBlockingFederationConsumerCreate(queue)) {
-         logger.trace("Federation Queue Policy manager creating remote consumer for queue: {}", queueEntry.getQueueName());
+      if (queueEntry.hasDemand()) {
+         // There might be a consumer that was previously stopped due to demand having been
+         // removed in which case we can attempt to recover it with a simple restart but if
+         // that fails ensure the old consumer is closed and then attempt to recreate as we
+         // know there is demand currently.
+         if (queueEntry.hasConsumer()) {
+            final FederationConsumerInternal federationConsuner = queueEntry.getConsumer();
 
-         signalBeforeCreateFederationConsumer(queueEntry.getConsumerInfo());
-
-         final FederationConsumerInternal queueConsumer = createFederationConsumer(queueEntry.getConsumerInfo());
-
-         // Handle remote close with remove of consumer which means that future demand will
-         // attempt to create a new consumer for that demand. Ensure that thread safety is
-         // accounted for here as the notification can be asynchronous.
-         queueConsumer.setRemoteClosedHandler((closedConsumer) -> {
-            synchronized (this) {
+            if (federationConsuner.isStopping()) {
+               return; // Allow stop to complete before restarting.
+            } else if (federationConsuner.isStopped()) {
                try {
-                  final FederationQueueEntry tracked = demandTracking.get(closedConsumer.getConsumerInfo());
+                  federationConsuner.start();
+               } catch (Exception ex) {
+                  logger.trace("Caught error on attempted restart of existing federation consumer", ex);
+                  queueEntry.clearConsumer();
 
-                  if (tracked != null) {
-                     tracked.clearConsumer();
+                  try {
+                     signalBeforeCloseFederationConsumer(federationConsuner);
+                     federationConsuner.close();
+                     signalAfterCloseFederationConsumer(federationConsuner);
+                  } catch (Exception ignore) {
+                     logger.trace("Caught error on attempted close of existing federation consumer", ignore);
                   }
-               } finally {
-                  closedConsumer.close();
                }
+            } else if (federationConsuner.isClosed()) {
+               queueEntry.clearConsumer();
             }
-         });
+         }
 
-         queueEntry.setConsumer(queueConsumer);
+         if (!queueEntry.hasConsumer() && !isPluginBlockingFederationConsumerCreate(queue)) {
+            logger.trace("Federation Queue Policy manager creating remote consumer for queue: {}", queueEntry.getQueueName());
 
-         // Now that we are tracking it we can start it
-         queueConsumer.start();
+            signalBeforeCreateFederationConsumer(queueEntry.getConsumerInfo());
 
-         signalAfterCreateFederationConsumer(queueConsumer);
+            final FederationConsumerInternal queueConsumer = createFederationConsumer(queueEntry.getConsumerInfo());
+
+            // Handle remote close with remove of consumer which means that future demand will
+            // attempt to create a new consumer for that demand. Ensure that thread safety is
+            // accounted for here as the notification can be asynchronous.
+            queueConsumer.setRemoteClosedHandler((closedConsumer) -> {
+               synchronized (this) {
+                  try {
+                     final FederationQueueEntry tracked = demandTracking.get(closedConsumer.getConsumerInfo());
+
+                     if (tracked != null) {
+                        tracked.clearConsumer();
+                     }
+                  } finally {
+                     closedConsumer.close();
+                  }
+               }
+            });
+
+            queueEntry.setConsumer(queueConsumer);
+
+            // Now that we are tracking it we can start it
+            queueConsumer.start();
+
+            signalAfterCreateFederationConsumer(queueConsumer);
+         }
       }
    }
 

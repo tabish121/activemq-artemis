@@ -97,11 +97,14 @@ public class FederationAddressEntry {
    /**
     * Clears the currently assigned consumer from this entry.
     *
-    * @return this federation address consumer entry.
+    * @return the consumer that was stored here previously or null if none was set
     */
-   public FederationAddressEntry clearConsumer() {
+   public FederationConsumerInternal clearConsumer() {
+      final FederationConsumerInternal taken = consumer;
+
       this.consumer = null;
-      return this;
+
+      return taken;
    }
 
    /**
@@ -128,6 +131,16 @@ public class FederationAddressEntry {
     */
    public FederationAddressEntry removeDemand(Binding binding) {
       demandBindings.remove(binding);
+      return this;
+   }
+
+   /**
+    * Remove demand on this federation address consumer from all previous bindings.
+    *
+    * @return this federation address consumer entry.
+    */
+   public FederationAddressEntry removeAllDemand() {
+      demandBindings.clear();
       return this;
    }
 }
