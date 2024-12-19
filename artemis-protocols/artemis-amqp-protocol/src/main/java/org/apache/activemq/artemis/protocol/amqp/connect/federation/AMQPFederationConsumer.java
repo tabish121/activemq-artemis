@@ -19,13 +19,13 @@ package org.apache.activemq.artemis.protocol.amqp.connect.federation;
 import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.DETACH_FORCED;
 import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.NOT_FOUND;
 import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.RESOURCE_DELETED;
+import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationMetrics.ConsumerMetrics;
 
 import java.lang.invoke.MethodHandles;
 import java.util.Objects;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Predicate;
 
@@ -79,10 +79,9 @@ public abstract class AMQPFederationConsumer implements FederationConsumer {
    protected final AMQPConnectionContext connection;
    protected final AMQPSessionContext session;
    protected final Predicate<Link> remoteCloseInterceptor = this::remoteLinkClosedInterceptor;
-   protected final BiConsumer<FederationConsumerInfo, Message> messageObserver;
-   protected final AtomicLong messageCount = new AtomicLong();
    protected final Transformer transformer;
    protected final AtomicBoolean closed = new AtomicBoolean();
+   protected final ConsumerMetrics metrics;
 
    protected volatile boolean initialized;
    protected ProtonAbstractReceiver receiver;
@@ -91,14 +90,13 @@ public abstract class AMQPFederationConsumer implements FederationConsumer {
 
    public AMQPFederationConsumer(AMQPFederation federation, AMQPFederationConsumerConfiguration configuration,
                                  AMQPSessionContext session, FederationConsumerInfo consumerInfo,
-                                 FederationReceiveFromResourcePolicy policy,
-                                 BiConsumer<FederationConsumerInfo, Message> messageObserver) {
+                                 FederationReceiveFromResourcePolicy policy, ConsumerMetrics metrics) {
       this.federation = federation;
       this.consumerInfo = consumerInfo;
       this.connection = session.getAMQPConnectionContext();
       this.session = session;
       this.configuration = configuration;
-      this.messageObserver = messageObserver;
+      this.metrics = metrics;
 
       final TransformerConfiguration transformerConfiguration = policy.getTransformerConfiguration();
       if (transformerConfiguration != null) {
@@ -112,7 +110,7 @@ public abstract class AMQPFederationConsumer implements FederationConsumer {
     * @return the number of messages this consumer has received from the remote during its lifetime.
     */
    public final long getMessagesReceived() {
-      return messageCount.get();
+      return metrics.getMessagesReceived();
    }
 
    @Override
@@ -348,11 +346,7 @@ public abstract class AMQPFederationConsumer implements FederationConsumer {
     *    The original message that arrived from the remote.
     */
    protected final void recordFederatedMessageReceived(Message message) {
-      messageCount.incrementAndGet();
-
-      if (messageObserver != null) {
-         messageObserver.accept(consumerInfo, message);
-      }
+      metrics.incrementMessagesReceived();
    }
 
    /**

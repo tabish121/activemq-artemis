@@ -22,27 +22,22 @@ import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPF
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.ADDRESS_AUTO_DELETE_MSG_COUNT;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.FEDERATION_ADDRESS_RECEIVER;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationPolicySupport.FEDERATED_ADDRESS_SOURCE_PROPERTIES;
-import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.QUEUE_CAPABILITY;
-import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.TOPIC_CAPABILITY;
-import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.verifyOfferedCapabilities;
-
 import java.lang.invoke.MethodHandles;
 import java.util.Collections;
 import java.util.Map;
 import java.util.Set;
-import org.apache.activemq.artemis.api.config.ActiveMQDefaultConfiguration;
 import org.apache.activemq.artemis.api.core.ActiveMQExceptionType;
 import org.apache.activemq.artemis.api.core.ActiveMQSecurityException;
 import org.apache.activemq.artemis.api.core.QueueConfiguration;
 import org.apache.activemq.artemis.api.core.RoutingType;
 import org.apache.activemq.artemis.api.core.SimpleString;
 import org.apache.activemq.artemis.core.server.AddressQueryResult;
-import org.apache.activemq.artemis.core.server.Consumer;
 import org.apache.activemq.artemis.core.server.QueueQueryResult;
+import org.apache.activemq.artemis.core.server.ServerConsumer;
+import org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationMetrics.ProducerMetrics;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPException;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPIllegalStateException;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPInternalErrorException;
-import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPNotImplementedException;
 import org.apache.activemq.artemis.protocol.amqp.logger.ActiveMQAMQPProtocolMessageBundle;
 import org.apache.activemq.artemis.protocol.amqp.proton.AMQPSessionContext;
 import org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport;
@@ -69,35 +64,27 @@ import org.slf4j.LoggerFactory;
  * create it using the configuration values supplied in the link source properties that
  * control the lifetime of the address once the link is closed.
  */
-public final class AMQPFederationAddressSenderController extends AMQPFederationBaseSenderController {
+public final class AMQPFederationAddressSenderController extends AMQPFederationSenderController {
 
    private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
-   private ProtonServerSenderContext senderContext;
+   public AMQPFederationAddressSenderController(AMQPFederationRemoteAddressPolicyManager manager, ProducerMetrics metrics, AMQPSessionContext session) throws ActiveMQAMQPException {
+      super(manager, metrics, session);
+   }
 
-   public AMQPFederationAddressSenderController(AMQPSessionContext session) throws ActiveMQAMQPException {
-      super(session);
+   @Override
+   public Role getRole() {
+      return Role.ADDRESS_PRODUCER;
    }
 
    @SuppressWarnings("unchecked")
    @Override
-   public Consumer init(ProtonServerSenderContext senderContext) throws Exception {
+   public ServerConsumer createServerConsumer(ProtonServerSenderContext senderContext) throws Exception {
       final Sender sender = senderContext.getSender();
       final Source source = (Source) sender.getRemoteSource();
       final String selector;
       final SimpleString queueName = SimpleString.of(sender.getName());
       final Connection protonConnection = session.getSession().getConnection();
-
-      if (federation == null) {
-         throw new ActiveMQAMQPIllegalStateException("Cannot create a federation link from non-federation connection");
-      }
-
-      if (source == null) {
-         throw new ActiveMQAMQPNotImplementedException("Null source lookup not supported on federation links.");
-      }
-
-      // Store for use during link close
-      this.senderContext = senderContext;
 
       // Match the settlement mode of the remote instead of relying on the default of MIXED.
       sender.setSenderSettleMode(sender.getRemoteSenderSettleMode());
@@ -108,10 +95,6 @@ public final class AMQPFederationAddressSenderController extends AMQPFederationB
       // We indicate desired to meet specification that we cannot use a capability unless we
       // indicated it was desired, however unless offered by the remote we cannot use it.
       sender.setDesiredCapabilities(new Symbol[] {AmqpSupport.CORE_MESSAGE_TUNNELING_SUPPORT});
-
-      // We need to check that the remote offers its ability to read tunneled core messages and
-      // if not we must not send them but instead convert all messages to AMQP messages first.
-      tunnelCoreMessages = verifyOfferedCapabilities(sender, AmqpSupport.CORE_MESSAGE_TUNNELING_SUPPORT);
 
       final Map<String, Object> addressSourceProperties;
 
@@ -203,9 +186,7 @@ public final class AMQPFederationAddressSenderController extends AMQPFederationB
       // to the remote to prompt it to create a new receiver.
       resourceDeletedAction = (e) -> federation.registerMissingAddress(address.toString());
 
-      registerRemoteLinkClosedInterceptor(sender);
-
-      return (Consumer) sessionSPI.createSender(senderContext, queueName, null, false);
+      return sessionSPI.createSender(senderContext, queueName, null, false);
    }
 
    @Override
@@ -260,19 +241,21 @@ public final class AMQPFederationAddressSenderController extends AMQPFederationB
       return selectorString;
    }
 
-   private static RoutingType getRoutingType(Source source) {
-      if (source != null) {
-         if (source.getCapabilities() != null) {
-            for (Symbol capability : source.getCapabilities()) {
-               if (TOPIC_CAPABILITY.equals(capability)) {
-                  return RoutingType.MULTICAST;
-               } else if (QUEUE_CAPABILITY.equals(capability)) {
-                  return RoutingType.ANYCAST;
-               }
-            }
-         }
+   @Override
+   protected void registerSenderManagement() {
+      try {
+         federation.registerAddressProducerManagement((AMQPFederationRemoteAddressPolicyManager) manager, this);
+      } catch (Exception e) {
+         logger.trace("Ignored exception while adding sender to management: ", e);
       }
+   }
 
-      return ActiveMQDefaultConfiguration.getDefaultRoutingType();
+   @Override
+   protected void unregisterSenderManagement() {
+      try {
+         federation.unregisterAddressProdcerManagement((AMQPFederationRemoteAddressPolicyManager) manager, this);
+      } catch (Exception e) {
+         logger.trace("Ignored exception while removing sender from management: ", e);
+      }
    }
 }

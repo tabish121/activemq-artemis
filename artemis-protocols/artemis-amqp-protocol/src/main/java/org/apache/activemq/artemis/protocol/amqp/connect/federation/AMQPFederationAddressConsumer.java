@@ -21,6 +21,7 @@ import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPF
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.ADDRESS_AUTO_DELETE_DELAY;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.ADDRESS_AUTO_DELETE_MSG_COUNT;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.FEDERATION_ADDRESS_RECEIVER;
+import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.FEDERATION_POLICY_NAME;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationPolicySupport.FEDERATED_ADDRESS_SOURCE_PROPERTIES;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationPolicySupport.MESSAGE_HOPS_PROPERTY;
 import static org.apache.activemq.artemis.protocol.amqp.proton.AMQPTunneledMessageConstants.AMQP_TUNNELED_CORE_LARGE_MESSAGE_FORMAT;
@@ -33,7 +34,6 @@ import java.util.Map;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.BiConsumer;
 import org.apache.activemq.artemis.api.core.ICoreMessage;
 import org.apache.activemq.artemis.api.core.Message;
 import org.apache.activemq.artemis.api.core.RoutingType;
@@ -41,6 +41,7 @@ import org.apache.activemq.artemis.api.core.SimpleString;
 import org.apache.activemq.artemis.core.server.AddressQueryResult;
 import org.apache.activemq.artemis.core.transaction.Transaction;
 import org.apache.activemq.artemis.protocol.amqp.broker.AMQPMessage;
+import org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationMetrics.ConsumerMetrics;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPException;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPInternalErrorException;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPNotFoundException;
@@ -89,8 +90,8 @@ public class AMQPFederationAddressConsumer extends AMQPFederationConsumer {
    public AMQPFederationAddressConsumer(AMQPFederationAddressPolicyManager manager,
                                         AMQPFederationConsumerConfiguration configuration,
                                         AMQPSessionContext session, FederationConsumerInfo consumerInfo,
-                                        BiConsumer<FederationConsumerInfo, Message> messageObserver) {
-      super(manager.getFederation(), configuration, session, consumerInfo, manager.getPolicy(), messageObserver);
+                                        ConsumerMetrics metrics) {
+      super(manager.getFederation(), configuration, session, consumerInfo, manager.getPolicy(), metrics);
 
       this.manager = manager;
       this.policy = manager.getPolicy();
@@ -151,6 +152,7 @@ public class AMQPFederationAddressConsumer extends AMQPFederationConsumer {
 
          final Map<Symbol, Object> receiverProperties = new HashMap<>();
          receiverProperties.put(FEDERATED_ADDRESS_SOURCE_PROPERTIES, addressSourceProperties);
+         receiverProperties.put(FEDERATION_POLICY_NAME, policy.getPolicyName());
 
          protonReceiver.setSenderSettleMode(SenderSettleMode.UNSETTLED);
          protonReceiver.setReceiverSettleMode(ReceiverSettleMode.FIRST);

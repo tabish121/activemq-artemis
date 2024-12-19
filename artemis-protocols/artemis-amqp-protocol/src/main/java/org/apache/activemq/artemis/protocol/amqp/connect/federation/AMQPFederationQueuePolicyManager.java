@@ -49,7 +49,7 @@ import org.slf4j.LoggerFactory;
 /**
  * The AMQP Federation implementation of an federation queue policy manager.
  */
-public final class AMQPFederationQueuePolicyManager extends AMQPFederationPolicyManager implements ActiveMQServerConsumerPlugin, ActiveMQServerBindingPlugin {
+public final class AMQPFederationQueuePolicyManager extends AMQPFederationLocalPolicyManager implements ActiveMQServerConsumerPlugin, ActiveMQServerBindingPlugin {
 
    private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
@@ -57,8 +57,8 @@ public final class AMQPFederationQueuePolicyManager extends AMQPFederationPolicy
    protected final FederationReceiveFromQueuePolicy policy;
    protected final Map<FederationConsumerInfo, AMQPFederationQueueEntry> demandTracking = new HashMap<>();
 
-   public AMQPFederationQueuePolicyManager(AMQPFederation federation, FederationReceiveFromQueuePolicy queuePolicy) throws ActiveMQException {
-      super(federation);
+   public AMQPFederationQueuePolicyManager(AMQPFederation federation, AMQPFederationMetrics metrics, FederationReceiveFromQueuePolicy queuePolicy) throws ActiveMQException {
+      super(federation, metrics, queuePolicy);
 
       Objects.requireNonNull(queuePolicy, "The Queue match policy cannot be null");
 
@@ -426,7 +426,7 @@ public final class AMQPFederationQueuePolicyManager extends AMQPFederationPolicy
 
       // Don't initiate anything yet as the caller might need to register error handlers etc
       // before the attach is sent otherwise they could miss the failure case.
-      return new AMQPFederationQueueConsumer(this, configuration, session, consumerInfo, messageObserver);
+      return new AMQPFederationQueueConsumer(this, configuration, session, consumerInfo, metrics.newConsumerMetrics());
    }
 
    /**

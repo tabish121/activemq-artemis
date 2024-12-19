@@ -47,7 +47,7 @@ import org.slf4j.LoggerFactory;
 /**
  * The AMQP Federation implementation of an federation address policy manager.
  */
-public final class AMQPFederationAddressPolicyManager extends AMQPFederationPolicyManager implements ActiveMQServerAddressPlugin {
+public final class AMQPFederationAddressPolicyManager extends AMQPFederationLocalPolicyManager implements ActiveMQServerAddressPlugin {
 
    private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
@@ -56,8 +56,8 @@ public final class AMQPFederationAddressPolicyManager extends AMQPFederationPoli
    protected final Map<String, AMQPFederationAddressEntry> demandTracking = new HashMap<>();
    protected final Map<DivertBinding, Set<QueueBinding>> divertsTracking = new HashMap<>();
 
-   public AMQPFederationAddressPolicyManager(AMQPFederation federation, FederationReceiveFromAddressPolicy addressPolicy) throws ActiveMQException {
-      super(federation);
+   public AMQPFederationAddressPolicyManager(AMQPFederation federation, AMQPFederationMetrics metrics, FederationReceiveFromAddressPolicy addressPolicy) throws ActiveMQException {
+      super(federation, metrics, addressPolicy);
 
       Objects.requireNonNull(addressPolicy, "The Address match policy cannot be null");
 
@@ -587,7 +587,7 @@ public final class AMQPFederationAddressPolicyManager extends AMQPFederationPoli
 
       // Don't initiate anything yet as the caller might need to register error handlers etc
       // before the attach is sent otherwise they could miss the failure case.
-      return new AMQPFederationAddressConsumer(this, configuration, session, consumerInfo, messageObserver);
+      return new AMQPFederationAddressConsumer(this, configuration, session, consumerInfo, metrics.newConsumerMetrics());
    }
 
    private String generateQueueName(AddressInfo address) {

@@ -1487,4 +1487,103 @@ public class AMQPFederationServerToServerTest extends AmqpClientTestSupport {
       final long pendingMessages = queueL.getMessageCount() + queueR.getMessageCount();
       assertEquals(REMAINING_COUNT, pendingMessages);
    }
+
+   @RepeatedTest(1)
+   @Timeout(20)
+   public void testTwoPullConsumerOnPullingFederationConfigurationEachCanTakeOneMessageProduceOnLocal() throws Exception {
+      doTestTwoPullConsumerOnPullingFederationConfigurationEachCanTakeOneMessage(true);
+   }
+
+
+   @RepeatedTest(1)
+   @Timeout(20)
+   public void testTwoPullConsumerOnPullingFederationConfigurationEachCanTakeOneMessageProduceOnRemote() throws Exception {
+      doTestTwoPullConsumerOnPullingFederationConfigurationEachCanTakeOneMessage(false);
+   }
+
+   public void doTestTwoPullConsumerOnPullingFederationConfigurationEachCanTakeOneMessage(boolean produceLocal) throws Exception {
+      logger.info("Test started: {}", getTestName());
+
+      final AMQPFederationQueuePolicyElement localQueuePolicy = new AMQPFederationQueuePolicyElement();
+      localQueuePolicy.setName("test-policy-1");
+      localQueuePolicy.addToIncludes(getTestName(), getTestName());
+      localQueuePolicy.addProperty(RECEIVER_CREDITS, 0);         // Enable Pull mode
+      localQueuePolicy.addProperty(PULL_RECEIVER_BATCH_SIZE, 1); // Pull mode batch is one
+
+      final AMQPFederationQueuePolicyElement remoteQueuePolicy = new AMQPFederationQueuePolicyElement();
+      remoteQueuePolicy.setName("test-policy-2");
+      remoteQueuePolicy.addToIncludes(getTestName(), getTestName());
+      remoteQueuePolicy.addProperty(RECEIVER_CREDITS, 0);         // Enable Pull mode
+      remoteQueuePolicy.addProperty(PULL_RECEIVER_BATCH_SIZE, 1); // Pull mode batch is one
+
+      final AMQPFederatedBrokerConnectionElement element = new AMQPFederatedBrokerConnectionElement();
+      element.setName(getTestName());
+      element.addLocalQueuePolicy(localQueuePolicy);
+      element.addRemoteQueuePolicy(remoteQueuePolicy);
+
+      final AMQPBrokerConnectConfiguration amqpConnection =
+         new AMQPBrokerConnectConfiguration(getTestName(), "tcp://localhost:" + SERVER_PORT_REMOTE);
+      amqpConnection.setReconnectAttempts(10);// Limit reconnects
+      amqpConnection.addElement(element);
+
+      server.getConfiguration().addAMQPConnection(amqpConnection);
+      remoteServer.start();
+      remoteServer.createQueue(QueueConfiguration.of(getTestName()).setRoutingType(RoutingType.ANYCAST)
+                                                                   .setAddress(getTestName())
+                                                                   .setAutoCreated(false));
+      server.start();
+      server.createQueue(QueueConfiguration.of(getTestName()).setRoutingType(RoutingType.ANYCAST)
+                                                             .setAddress(getTestName())
+                                                             .setAutoCreated(false));
+
+      final int MESSAGE_COUNT = 2;
+      final JmsConnectionFactory factory;
+      if (produceLocal) {
+         factory = new JmsConnectionFactory("amqp://localhost:" + SERVER_PORT);
+      } else {
+         factory = new JmsConnectionFactory("amqp://localhost:" + SERVER_PORT_REMOTE);
+      }
+
+      try (Connection connection = factory.createConnection();
+           Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE)) {
+
+         final Queue queue = session.createQueue(getTestName());
+         final MessageProducer producer = session.createProducer(queue);
+
+         for (int i = 0; i < MESSAGE_COUNT; ++i) {
+            TextMessage message = session.createTextMessage("test-message:" + i);
+
+            message.setIntProperty("messageNo", i);
+
+            producer.send(message);
+         }
+      }
+
+      final JmsConnectionFactory factoryLocal = new JmsConnectionFactory(
+         "amqp://localhost:" + SERVER_PORT + "?jms.prefetchPolicy.all=0");
+      final JmsConnectionFactory factoryRemote = new JmsConnectionFactory(
+         "amqp://localhost:" + SERVER_PORT_REMOTE + "?jms.prefetchPolicy.all=0");
+
+      try (Connection connectionL = factoryLocal.createConnection();
+           Connection connectionR = factoryRemote.createConnection();
+           Session sessionL = connectionL.createSession(Session.AUTO_ACKNOWLEDGE);
+           Session sessionR = connectionR.createSession(Session.AUTO_ACKNOWLEDGE)) {
+
+         connectionL.start();
+         connectionR.start();
+
+         Wait.assertTrue(() -> server.queueQuery(SimpleString.of(getTestName())).isExists(), 10_000);
+         Wait.assertTrue(() -> remoteServer.queueQuery(SimpleString.of(getTestName())).isExists(), 10_000);
+
+         final Queue queue = sessionL.createQueue(getTestName());
+         final MessageConsumer consumerL = sessionL.createConsumer(queue);
+         final MessageConsumer consumerR = sessionR.createConsumer(queue);
+
+         final TextMessage messageL = (TextMessage) consumerL.receive(1_000); // Read from local
+         final TextMessage messageR = (TextMessage) consumerR.receive(1_000); // Read from remote after federated
+
+         assertNotNull(messageL);
+         assertNotNull(messageR);
+      }
+   }
 }
