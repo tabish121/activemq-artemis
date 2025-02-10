@@ -200,7 +200,9 @@ public final class AMQPFederationAddressConsumer extends AMQPFederationConsumer 
 
                receiver = new AMQPFederatedAddressDeliveryReceiver(session, consumerInfo, protonReceiver);
 
-               if (protonReceiver.getRemoteSource() != null) {
+               final boolean linkOpened = protonReceiver.getRemoteSource() != null;
+
+               if (linkOpened) {
                   logger.debug("AMQP Federation {} address consumer {} completed open", federation.getName(), consumerInfo);
                } else {
                   logger.debug("AMQP Federation {} address consumer {} rejected by remote", federation.getName(), consumerInfo);
@@ -209,6 +211,10 @@ public final class AMQPFederationAddressConsumer extends AMQPFederationConsumer 
                session.addReceiver(protonReceiver, (session, protonRcvr) -> {
                   return this.receiver;
                });
+
+               if (linkOpened && remoteOpenHandler != null) {
+                  remoteOpenHandler.accept(this);
+               }
             } catch (Exception e) {
                federation.signalError(e);
             }

@@ -295,11 +295,18 @@ public final class AMQPFederationConstants {
    public static final String REQUESTED_ADDRESS_NAME = "REQUESTED_ADDRESS_NAME";
 
    /**
-    * When a federation receiver link is being closed due to removal of local demand this timeout
+    * When a federation receiver link is being drained due to removal of local demand this timeout
     * value enforces a maximum wait for drain and processing of in-flight messages before the link
     * is forcibly terminated with the assumption that the remote is no longer responding.
     */
    public static final String RECEIVER_QUIESCE_TIMEOUT = "receiverQuiesceTimeout";
+
+   /**
+    * When a federation receiver link has been successfully drained after demand was removed from
+    * the federated resource, this value controls how long the link can remain in an attached but
+    * idle state before it is closed.
+    */
+   public static final String RECEIVER_IDLE_TIMEOUT = "receiverIdleTimeout";
 
    /**
     * Property name used to carry the name of the federation that triggered creation of the remote

@@ -24,6 +24,7 @@ import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPF
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.PULL_RECEIVER_BATCH_SIZE;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.RECEIVER_CREDITS;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.RECEIVER_CREDITS_LOW;
+import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.RECEIVER_IDLE_TIMEOUT;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.RECEIVER_QUIESCE_TIMEOUT;
 
 import java.util.Collections;
@@ -58,6 +59,9 @@ public final class AMQPFederationConsumerConfiguration {
       }
    }
 
+   /**
+    * @return the credit batch size offered to a {@link Receiver} link.
+    */
    public int getReceiverCredits() {
       final Object property = properties.get(RECEIVER_CREDITS);
       if (property instanceof Number number) {
@@ -69,6 +73,9 @@ public final class AMQPFederationConsumerConfiguration {
       }
    }
 
+   /**
+    * @return the number of remaining credits on a {@link Receiver} before the batch is replenished.
+    */
    public int getReceiverCreditsLow() {
       final Object property = properties.get(RECEIVER_CREDITS_LOW);
       if (property instanceof Number number) {
@@ -80,6 +87,9 @@ public final class AMQPFederationConsumerConfiguration {
       }
    }
 
+   /**
+    * @return the receiver drain timeout for a stopping federation consumer before it is closed.
+    */
    public int getReceiverQuiesceTimeout() {
       final Object property = properties.get(RECEIVER_QUIESCE_TIMEOUT);
       if (property instanceof Number number) {
@@ -88,6 +98,20 @@ public final class AMQPFederationConsumerConfiguration {
          return Integer.parseInt(string);
       } else {
          return configuration.getReceiverQuiesceTimeout();
+      }
+   }
+
+   /**
+    * @return the idle timeout for a drained federation consumer before it is closed.
+    */
+   public int getReceiverIdleTimeout() {
+      final Object property = properties.get(RECEIVER_IDLE_TIMEOUT);
+      if (property instanceof Number number) {
+         return number.intValue();
+      } else if (property instanceof String string) {
+         return Integer.parseInt(string);
+      } else {
+         return configuration.getReceiverIdleTimeout();
       }
    }
 
@@ -105,6 +129,9 @@ public final class AMQPFederationConsumerConfiguration {
       }
    }
 
+   /**
+    * @return the size in bytes of an incoming message after which the {@link Receiver} treats it as large.
+    */
    public int getLargeMessageThreshold() {
       final Object property = properties.get(LARGE_MESSAGE_THRESHOLD);
       if (property instanceof Number number) {
@@ -116,6 +143,9 @@ public final class AMQPFederationConsumerConfiguration {
       }
    }
 
+   /**
+    * @return the timeout value to use when waiting for a corresponding link attach from the remote.
+    */
    public int getLinkAttachTimeout() {
       final Object property = properties.get(LINK_ATTACH_TIMEOUT);
       if (property instanceof Number number) {
@@ -127,6 +157,9 @@ public final class AMQPFederationConsumerConfiguration {
       }
    }
 
+   /**
+    * @return true if the federation is configured to tunnel core messages as AMQP custom messages.
+    */
    public boolean isCoreMessageTunnelingEnabled() {
       final Object property = properties.get(AmqpSupport.TUNNEL_CORE_MESSAGES);
       if (property instanceof Boolean booleanValue) {
@@ -138,6 +171,9 @@ public final class AMQPFederationConsumerConfiguration {
       }
    }
 
+   /**
+    * @return <code>true</code> if federation is configured to ignore filters on individual queue consumers
+    */
    public boolean isIgnoreSubscriptionFilters() {
       final Object property = properties.get(IGNORE_QUEUE_CONSUMER_FILTERS);
       if (property instanceof Boolean booleanValue) {
@@ -149,6 +185,9 @@ public final class AMQPFederationConsumerConfiguration {
       }
    }
 
+   /**
+    * @return <code>true</code> if federation is configured to ignore priorities on individual queue consumers
+    */
    public boolean isIgnoreSubscriptionPriorities() {
       final Object property = properties.get(IGNORE_QUEUE_CONSUMER_PRIORITIES);
       if (property instanceof Boolean booleanValue) {
