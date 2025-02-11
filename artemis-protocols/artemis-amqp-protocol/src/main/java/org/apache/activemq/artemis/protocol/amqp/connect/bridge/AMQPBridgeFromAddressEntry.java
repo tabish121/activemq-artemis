@@ -16,7 +16,6 @@
  */
 package org.apache.activemq.artemis.protocol.amqp.connect.bridge;
 
-import java.io.Closeable;
 import java.util.HashSet;
 import java.util.Objects;
 import java.util.Set;
@@ -33,7 +32,7 @@ import org.apache.activemq.artemis.core.server.impl.AddressInfo;
  * on a bridged resource such that it is not torn down until all demand has been
  * removed from the local resource.
  */
-public class AMQPBridgeFromAddressEntry implements Closeable {
+public class AMQPBridgeFromAddressEntry {
 
    private final AddressInfo addressInfo;
    private final Set<Binding> demandBindings = new HashSet<>();
@@ -50,29 +49,6 @@ public class AMQPBridgeFromAddressEntry implements Closeable {
     */
    public AMQPBridgeFromAddressEntry(AddressInfo addressInfo) {
       this.addressInfo = addressInfo;
-   }
-
-   @Override
-   public void close() {
-      if (recoveryHandler != null) {
-         try {
-            recoveryHandler.close();
-         } catch (Exception e) {
-            // Nothing to do at this point.
-         } finally {
-            recoveryHandler = null;
-         }
-      }
-
-      if (receiver != null) {
-         try {
-            receiver.close();
-         } catch (Exception e) {
-            // Nothing to do at this point.
-         } finally {
-            receiver = null;
-         }
-      }
    }
 
    /**
@@ -120,11 +96,14 @@ public class AMQPBridgeFromAddressEntry implements Closeable {
    /**
     * Clears the currently assigned receiver from this entry.
     *
-    * @return this bridged address receiver entry.
+    * @return the receiver that was stored here previously or null if none was set
     */
-   public AMQPBridgeFromAddressEntry clearReceiver() {
+   public AMQPBridgeReceiver clearReceiver() {
+      final AMQPBridgeReceiver taken = receiver;
+
       this.receiver = null;
-      return this;
+
+      return taken;
    }
 
    /**
@@ -156,12 +135,19 @@ public class AMQPBridgeFromAddressEntry implements Closeable {
    }
 
    /**
-    * Clears any previously assigned link recovery handler.
+    * Closes and clears any previously assigned link recovery handler.
     *
     * @return this bridged address receiver entry.
     */
-   public AMQPBridgeFromAddressEntry clearRecoveryHandler() {
-      this.recoveryHandler = null;
+   public AMQPBridgeFromAddressEntry releaseRecoveryHandler() {
+      if (recoveryHandler != null) {
+         try {
+            recoveryHandler.close();
+         } finally {
+            recoveryHandler = null;
+         }
+      }
+
       return this;
    }
 
@@ -206,6 +192,19 @@ public class AMQPBridgeFromAddressEntry implements Closeable {
     */
    public AMQPBridgeFromAddressEntry removeDemand(Binding binding) {
       demandBindings.remove(binding);
+      return this;
+   }
+
+   /**
+    * Remove demand on this bridged address receiver from all previous bindings, including
+    * the forced demand added for policies that bridge regardless of local demand.
+    *
+    * @return this bridged address receiver entry.
+    */
+   public AMQPBridgeFromAddressEntry removeAllDemand() {
+      demandBindings.clear();
+      forceDemand = false;
+
       return this;
    }
 }

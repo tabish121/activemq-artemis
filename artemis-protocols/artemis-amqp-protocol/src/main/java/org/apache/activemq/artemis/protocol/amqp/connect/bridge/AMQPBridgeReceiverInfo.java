@@ -22,26 +22,26 @@ import java.util.UUID;
 import org.apache.activemq.artemis.api.core.RoutingType;
 
 /**
- * Information and identification interface for AMQP bridge receivers that will be
+ * Information and identification interface for AMQP bridgeManager receivers that will be
  * created on the remote peer as demand on the local broker is detected. The behavior
  * and meaning of some APIs in this interface may vary slightly depending on the role
  * of the receiver (Address or Queue).
  */
 public class AMQPBridgeReceiverInfo {
 
-   enum Role {
+   enum ReceiverRole {
       /**
-       * Receiver created from a match on a configured bridge from address policy.
+       * Receiver created from a match on a configured bridgeManager from address policy.
        */
       ADDRESS_RECEIVER,
 
       /**
-       * Receiver created from a match on a configured bridge from queue policy.
+       * Receiver created from a match on a configured bridgeManager from queue policy.
        */
       QUEUE_RECEIVER
    }
 
-   private final Role role;
+   private final ReceiverRole role;
    private final String localAddress;
    private final String localQueue;
    private final String localFqqn;
@@ -51,13 +51,13 @@ public class AMQPBridgeReceiverInfo {
    private final String id;
    private final Integer priority;
 
-   public AMQPBridgeReceiverInfo(Role role, String localAddress, String localQueue, RoutingType routingType,
+   public AMQPBridgeReceiverInfo(ReceiverRole role, String localAddress, String localQueue, RoutingType routingType,
                                  String remoteAddress, String filterString, Integer priority) {
       this.role = role;
       this.localAddress = localAddress;
       this.localQueue = localQueue;
       this.routingType = routingType;
-      if (role == Role.QUEUE_RECEIVER) {
+      if (role == ReceiverRole.QUEUE_RECEIVER) {
          localFqqn = localAddress + "::" + localQueue;
       } else {
          localFqqn = null;
@@ -78,7 +78,7 @@ public class AMQPBridgeReceiverInfo {
    /**
     * @return the role assigned to this receiver instance.
     */
-   public Role getRole() {
+   public ReceiverRole getRole() {
       return role;
    }
 

@@ -105,7 +105,6 @@ public class AMQPBrokerConnectionManager implements ActiveMQComponent, ClientCon
     *
     * @throws Exception
     */
-   @SuppressWarnings("unchecked")
    public void updateConfiguration(List<AMQPBrokerConnectConfiguration> configurations) throws Exception {
       final List<AMQPBrokerConnectConfiguration> updatedConfigurations =
          configurations != null ? configurations : Collections.emptyList();

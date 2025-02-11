@@ -277,6 +277,14 @@ public class AMQPBrokerConnection implements ClientConnectionLifeCycleListener, 
             }
          }
 
+         if (bridgeManagers != null) {
+            try {
+               bridgeManagers.start();
+            } catch (ActiveMQException e) {
+               logger.warn("Error caught while starting bridge managers instance.", e);
+            }
+         }
+
          connectExecutor.execute(() -> doConnect());
       }
    }
@@ -302,8 +310,16 @@ public class AMQPBrokerConnection implements ClientConnectionLifeCycleListener, 
          if (brokerFederation != null) {
             try {
                brokerFederation.stop();
-            } catch (ActiveMQException e) {
+            } catch (Exception e) {
                logger.debug("Error caught while stopping federation instance.", e);
+            }
+         }
+
+         if (bridgeManagers != null) {
+            try {
+               bridgeManagers.stop();
+            } catch (Exception e) {
+               logger.warn("Error caught while stopping bridge managers instance.", e);
             }
          }
       }
@@ -321,6 +337,16 @@ public class AMQPBrokerConnection implements ClientConnectionLifeCycleListener, 
                logger.debug("Error caught while shutting down federation instance.", e);
             } finally {
                brokerFederation = null;
+            }
+         }
+
+         if (bridgeManagers != null) {
+            try {
+               bridgeManagers.shutdown();
+            } catch (Exception e) {
+               logger.debug("Error caught while shutting down bridge managers instance.", e);
+            } finally {
+               bridgeManagers = null;
             }
          }
 
@@ -542,7 +568,7 @@ public class AMQPBrokerConnection implements ClientConnectionLifeCycleListener, 
                } else if (connectionElement.getType() == AMQPBrokerConnectionAddressType.BRIDGE) {
                   // Starting the Bridge triggers rebuild of AMQP sender and receiver links based on current broker state.
                   if (bridgeManagers != null) {
-                     bridgeManagers.handleConnectionRestored(sessionContext);
+                     bridgeManagers.connectionRestored(sessionContext);
                   }
                }
             }
@@ -672,7 +698,7 @@ public class AMQPBrokerConnection implements ClientConnectionLifeCycleListener, 
    }
 
    private static Queue checkCurrentMirror(AMQPBrokerConnection brokerConnection,
-                                             AMQPMirrorControllerSource currentMirrorController) {
+                                           AMQPMirrorControllerSource currentMirrorController) {
       AMQPMirrorControllerSource source = currentMirrorController;
       if (source.getBrokerConnection() == brokerConnection) {
          return source.getSnfQueue();
@@ -1116,7 +1142,7 @@ public class AMQPBrokerConnection implements ClientConnectionLifeCycleListener, 
       }
 
       if (bridgeManagers != null) {
-         bridgeManagers.handleConnectionDropped();
+         bridgeManagers.connectionInterrupted();
       }
 
       // we need to use the connectExecutor to initiate a redoConnection

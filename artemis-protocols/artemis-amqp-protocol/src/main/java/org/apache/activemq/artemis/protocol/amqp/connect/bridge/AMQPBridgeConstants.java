@@ -224,4 +224,18 @@ public final class AMQPBridgeConstants {
     */
    public static final int DEFAULT_PRIORITY_ADJUSTMENT_VALUE = -1;
 
+   /**
+    * When a bridge receiver link is being closed due to removal of local demand this timeout
+    * value enforces a maximum wait for drain and processing of in-flight messages before the link
+    * is forcibly terminated with the assumption that the remote is no longer responding.
+    */
+   public static final String RECEIVER_QUIESCE_TIMEOUT = "receiverQuiesceTimeout";
+
+   /**
+    * Default timeout (milliseconds) applied to bridge receivers that are being closed due to removal
+    * of local demand and need to drain link credit and process any in-flight deliveries before closure.
+    * If the timeout elapses before the link has quiesced the link is forcibly closed.
+    */
+   public static final int DEFAULT_RECEIVER_QUIESCE_TIMEOUT = 60_000;
+
 }

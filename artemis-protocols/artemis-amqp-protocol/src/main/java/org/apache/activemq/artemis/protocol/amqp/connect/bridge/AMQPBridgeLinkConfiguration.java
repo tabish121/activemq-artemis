@@ -45,7 +45,7 @@ public abstract class AMQPBridgeLinkConfiguration {
       this.configuration = configuration;
 
       if (properties == null || properties.isEmpty()) {
-         this.properties = Collections.EMPTY_MAP;
+         this.properties = Collections.emptyMap();
       } else {
          this.properties = (Map<String, Object>) Collections.unmodifiableMap(new HashMap<>(properties));
       }

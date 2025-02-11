@@ -27,6 +27,7 @@ import org.apache.activemq.artemis.core.server.AddressQueryResult;
 import org.apache.activemq.artemis.core.server.MessageReference;
 import org.apache.activemq.artemis.protocol.amqp.broker.AMQPLargeMessage;
 import org.apache.activemq.artemis.protocol.amqp.broker.AMQPSessionCallback;
+import org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeMetrics.SenderMetrics;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPException;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPInternalErrorException;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPNotFoundException;
@@ -55,12 +56,12 @@ public class AMQPBridgeToAddressSender extends AMQPBridgeSender {
 
    private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
-   public AMQPBridgeToAddressSender(AMQPBridgeManager bridge,
+   public AMQPBridgeToAddressSender(AMQPBridgeToPolicyManager policyManager,
                                     AMQPBridgeSenderConfiguration configuration,
                                     AMQPSessionContext session,
                                     AMQPBridgeSenderInfo senderInfo,
-                                    AMQPBridgeAddressPolicy policy) {
-      super(bridge, configuration, session, senderInfo, policy);
+                                    SenderMetrics metrics) {
+      super(policyManager, configuration, session, senderInfo, metrics);
    }
 
    @Override

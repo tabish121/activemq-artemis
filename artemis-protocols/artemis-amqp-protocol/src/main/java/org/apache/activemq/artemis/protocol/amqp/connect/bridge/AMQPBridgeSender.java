@@ -24,6 +24,7 @@ import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.RESOU
 import java.io.Closeable;
 import java.util.function.Consumer;
 
+import org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeMetrics.SenderMetrics;
 import org.apache.activemq.artemis.protocol.amqp.proton.AMQPConnectionContext;
 import org.apache.activemq.artemis.protocol.amqp.proton.AMQPSessionContext;
 import org.apache.activemq.artemis.protocol.amqp.proton.ProtonServerSenderContext;
@@ -38,30 +39,38 @@ import org.apache.qpid.proton.engine.Sender;
 public abstract class AMQPBridgeSender implements Closeable {
 
    protected final AMQPBridgeManager bridge;
+   protected final AMQPBridgeToPolicyManager policyManager;
    protected final AMQPBridgeSenderConfiguration configuration;
    protected final AMQPBridgeSenderInfo senderInfo;
    protected final AMQPBridgePolicy policy;
    protected final AMQPConnectionContext connection;
    protected final AMQPSessionContext session;
+   protected final SenderMetrics metrics;
 
    protected ProtonServerSenderContext senderContext;
    protected Sender protonSender;
    protected boolean started;
-   protected boolean closed;
+   protected volatile boolean closed;
    protected Consumer<AMQPBridgeSender> remoteOpenHandler;
    protected Consumer<AMQPBridgeSender> remoteCloseHandler;
 
-   public AMQPBridgeSender(AMQPBridgeManager bridge,
+   public AMQPBridgeSender(AMQPBridgeToPolicyManager policyManager,
                            AMQPBridgeSenderConfiguration configuration,
                            AMQPSessionContext session,
                            AMQPBridgeSenderInfo senderInfo,
-                           AMQPBridgePolicy policy) {
-      this.bridge = bridge;
+                           SenderMetrics metrics) {
+      this.policyManager = policyManager;
+      this.bridge = policyManager.getBridgeManager();
       this.senderInfo = senderInfo;
-      this.policy = policy;
+      this.policy = policyManager.getPolicy();
       this.connection = session.getAMQPConnectionContext();
       this.session = session;
       this.configuration = configuration;
+      this.metrics = metrics;
+   }
+
+   public boolean isClosed() {
+      return closed;
    }
 
    /**

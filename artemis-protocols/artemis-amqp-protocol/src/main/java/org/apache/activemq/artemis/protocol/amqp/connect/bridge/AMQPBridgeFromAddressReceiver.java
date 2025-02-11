@@ -25,13 +25,11 @@ import java.util.Map;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicLong;
 import org.apache.activemq.artemis.api.core.Message;
 import org.apache.activemq.artemis.api.core.SimpleString;
-import org.apache.activemq.artemis.core.config.TransformerConfiguration;
 import org.apache.activemq.artemis.core.server.AddressQueryResult;
-import org.apache.activemq.artemis.core.server.transformer.Transformer;
 import org.apache.activemq.artemis.core.transaction.Transaction;
+import org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeMetrics.ReceiverMetrics;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPException;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPInternalErrorException;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPNotFoundException;
@@ -42,11 +40,7 @@ import org.apache.activemq.artemis.protocol.amqp.proton.AmqpJmsSelectorFilter;
 import org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport;
 import org.apache.activemq.artemis.protocol.amqp.proton.ProtonServerReceiverContext;
 import org.apache.qpid.proton.amqp.Symbol;
-import org.apache.qpid.proton.amqp.messaging.Accepted;
 import org.apache.qpid.proton.amqp.messaging.DeliveryAnnotations;
-import org.apache.qpid.proton.amqp.messaging.Modified;
-import org.apache.qpid.proton.amqp.messaging.Rejected;
-import org.apache.qpid.proton.amqp.messaging.Released;
 import org.apache.qpid.proton.amqp.messaging.Source;
 import org.apache.qpid.proton.amqp.messaging.Target;
 import org.apache.qpid.proton.amqp.messaging.TerminusDurability;
@@ -67,174 +61,114 @@ public class AMQPBridgeFromAddressReceiver extends AMQPBridgeReceiver {
 
    private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
-   private static final Symbol[] OUTCOMES = new Symbol[] {Accepted.DESCRIPTOR_SYMBOL, Rejected.DESCRIPTOR_SYMBOL,
-                                                          Released.DESCRIPTOR_SYMBOL, Modified.DESCRIPTOR_SYMBOL};
-
-   private static final Modified MODIFIED_FAILED;
-   static {
-      Modified modifiedFailed = new Modified();
-      modifiedFailed.setDeliveryFailed(true);
-
-      MODIFIED_FAILED = modifiedFailed;
-   }
-
-   // Sequence ID value used to keep links that would otherwise have the same name from overlapping
-   // this generally occurs when a remote link detach is delayed and new demand is added before it
-   // arrives resulting in an unintended link stealing scenario in the proton engine.
-   private static final AtomicLong LINK_SEQUENCE_ID = new AtomicLong();
-
-   private final Transformer transformer;
-
-   public AMQPBridgeFromAddressReceiver(AMQPBridgeManager bridge, AMQPBridgeReceiverConfiguration configuration,
+   public AMQPBridgeFromAddressReceiver(AMQPBridgeFromPolicyManager policyManager, AMQPBridgeReceiverConfiguration configuration,
                                         AMQPSessionContext session, AMQPBridgeReceiverInfo receiverInfo,
-                                        AMQPBridgeAddressPolicy policy) {
-      super(bridge, configuration, session, receiverInfo, policy);
-
-      final TransformerConfiguration transformerConfiguration = policy.getTransformerConfiguration();
-      if (transformerConfiguration != null) {
-         this.transformer = bridge.getServer().getServiceRegistry().getBridgeTransformer(policy.getPolicyName(), transformerConfiguration);
-      } else {
-         this.transformer = (m) -> m;
-      }
+                                        AMQPBridgeAddressPolicy policy, ReceiverMetrics metrics) {
+      super(policyManager, configuration, session, receiverInfo, policy, metrics);
    }
 
    @Override
-   protected void asyncCloseReceiver() {
-      connection.runLater(() -> {
-         bridge.removeLinkClosedInterceptor(receiverInfo.getId());
+   protected void doCreateReceiver() {
+      try {
+         final Receiver protonReceiver = session.getSession().receiver(generateLinkName());
+         final Target target = new Target();
+         final Source source = new Source();
+         final String address = receiverInfo.getRemoteAddress();
+         final String filterString = receiverInfo.getFilterString();
 
-         if (receiverContext != null) {
+         source.setOutcomes(Arrays.copyOf(OUTCOMES, OUTCOMES.length));
+         source.setDefaultOutcome(DEFAULT_OUTCOME);
+         source.setDurable(TerminusDurability.NONE);
+         source.setExpiryPolicy(TerminusExpiryPolicy.LINK_DETACH);
+         source.setAddress(address);
+         source.setCapabilities(getRemoteTerminusCapabilities());
+
+         if (filterString != null && !filterString.isBlank()) {
+            final AmqpJmsSelectorFilter jmsFilter = new AmqpJmsSelectorFilter(filterString);
+            final Map<Symbol, Object> filtersMap = new HashMap<>();
+            filtersMap.put(AmqpSupport.JMS_SELECTOR_KEY, jmsFilter);
+
+            source.setFilter(filtersMap);
+         }
+
+         target.setAddress(receiverInfo.getLocalAddress());
+
+         final Map<Symbol, Object> receiverProperties;
+         if (receiverInfo.getPriority() != null) {
+            receiverProperties = new HashMap<>();
+            receiverProperties.put(RECEIVER_PRIORITY, receiverInfo.getPriority().intValue());
+         } else {
+            receiverProperties = null;
+         }
+
+         protonReceiver.setSenderSettleMode(configuration.isUsingPresettledSenders() ? SenderSettleMode.SETTLED : SenderSettleMode.UNSETTLED);
+         protonReceiver.setReceiverSettleMode(ReceiverSettleMode.FIRST);
+         protonReceiver.setProperties(receiverProperties);
+         protonReceiver.setTarget(target);
+         protonReceiver.setSource(source);
+         protonReceiver.open();
+
+         final ScheduledFuture<?> openTimeoutTask;
+         final AtomicBoolean openTimedOut = new AtomicBoolean(false);
+
+         if (configuration.getLinkAttachTimeout() > 0) {
+            openTimeoutTask = bridgeManager.getServer().getScheduledPool().schedule(() -> {
+               openTimedOut.set(true);
+               bridgeManager.signalResourceCreateError(ActiveMQAMQPProtocolMessageBundle.BUNDLE.brokerConnectionTimeout());
+            }, configuration.getLinkAttachTimeout(), TimeUnit.SECONDS);
+         } else {
+            openTimeoutTask = null;
+         }
+
+         this.protonReceiver = protonReceiver;
+
+         protonReceiver.attachments().set(AMQP_LINK_INITIALIZER_KEY, Runnable.class, () -> {
             try {
-               receiverContext.close(false);
-            } catch (ActiveMQAMQPException e) {
-            } finally {
-               receiverContext = null;
-            }
-         }
-
-         // Need to track the proton receiver and close it here as the default
-         // context implementation doesn't do that and could result in no detach
-         // being sent in some cases and possible resources leaks.
-         if (protonReceiver != null) {
-            try {
-               protonReceiver.close();
-            } finally {
-               protonReceiver = null;
-            }
-         }
-
-         connection.flush();
-      });
-   }
-
-   @Override
-   protected void asyncCreateReceiver() {
-      connection.runLater(() -> {
-         if (closed) {
-            return;
-         }
-
-         try {
-            final Receiver protonReceiver = session.getSession().receiver(generateLinkName());
-            final Target target = new Target();
-            final Source source = new Source();
-            final String address = receiverInfo.getRemoteAddress();
-            final String filterString = receiverInfo.getFilterString();
-
-            source.setOutcomes(Arrays.copyOf(OUTCOMES, OUTCOMES.length));
-            source.setDefaultOutcome(MODIFIED_FAILED);
-            source.setDurable(TerminusDurability.NONE);
-            source.setExpiryPolicy(TerminusExpiryPolicy.LINK_DETACH);
-            source.setAddress(address);
-            source.setCapabilities(getRemoteTerminusCapabilities());
-
-            if (filterString != null && !filterString.isBlank()) {
-               final AmqpJmsSelectorFilter jmsFilter = new AmqpJmsSelectorFilter(filterString);
-               final Map<Symbol, Object> filtersMap = new HashMap<>();
-               filtersMap.put(AmqpSupport.JMS_SELECTOR_KEY, jmsFilter);
-
-               source.setFilter(filtersMap);
-            }
-
-            target.setAddress(receiverInfo.getLocalAddress());
-
-            final Map<Symbol, Object> receiverProperties;
-            if (receiverInfo.getPriority() != null) {
-               receiverProperties = new HashMap<>();
-               receiverProperties.put(RECEIVER_PRIORITY, receiverInfo.getPriority().intValue());
-            } else {
-               receiverProperties = null;
-            }
-
-            protonReceiver.setSenderSettleMode(configuration.isUsingPresettledSenders() ? SenderSettleMode.SETTLED : SenderSettleMode.UNSETTLED);
-            protonReceiver.setReceiverSettleMode(ReceiverSettleMode.FIRST);
-            protonReceiver.setProperties(receiverProperties);
-            protonReceiver.setTarget(target);
-            protonReceiver.setSource(source);
-            protonReceiver.open();
-
-            final ScheduledFuture<?> openTimeoutTask;
-            final AtomicBoolean openTimedOut = new AtomicBoolean(false);
-
-            if (configuration.getLinkAttachTimeout() > 0) {
-               openTimeoutTask = bridge.getServer().getScheduledPool().schedule(() -> {
-                  openTimedOut.set(true);
-                  bridge.signalResourceCreateError(ActiveMQAMQPProtocolMessageBundle.BUNDLE.brokerConnectionTimeout());
-               }, configuration.getLinkAttachTimeout(), TimeUnit.SECONDS);
-            } else {
-               openTimeoutTask = null;
-            }
-
-            this.protonReceiver = protonReceiver;
-
-            protonReceiver.attachments().set(AMQP_LINK_INITIALIZER_KEY, Runnable.class, () -> {
-               try {
-                  if (openTimeoutTask != null) {
-                     openTimeoutTask.cancel(false);
-                  }
-
-                  if (openTimedOut.get()) {
-                     return;
-                  }
-
-                  final boolean linkOpened = protonReceiver.getRemoteSource() != null;
-
-                  // Intercept remote close and check for valid reasons for remote closure such as
-                  // the remote peer not having a matching node for this subscription or from an
-                  // operator manually closing the link etc.
-                  bridge.addLinkClosedInterceptor(receiverInfo.getId(), this::remoteLinkClosedInterceptor);
-
-                  receiverContext = new AMQPBridgeAddressDeliveryReceiver(session, receiverInfo, protonReceiver);
-
-                  if (linkOpened) {
-                     logger.debug("AMQP Bridge {} address receiver {} completed open", bridge.getName(), receiverInfo);
-                  } else {
-                     logger.debug("AMQP Bridge {} address receiver {} rejected by remote", bridge.getName(), receiverInfo);
-                  }
-
-                  session.addReceiver(protonReceiver, (session, protonRcvr) -> {
-                     return this.receiverContext;
-                  });
-
-                  if (linkOpened && remoteOpenHandler != null) {
-                     remoteOpenHandler.accept(this);
-                  }
-               } catch (Exception e) {
-                  bridge.signalError(e);
+               if (openTimeoutTask != null) {
+                  openTimeoutTask.cancel(false);
                }
-            });
-         } catch (Exception e) {
-            bridge.signalError(e);
-         }
 
-         connection.flush();
-      });
+               if (openTimedOut.get()) {
+                  return;
+               }
+
+               final boolean linkOpened = protonReceiver.getRemoteSource() != null;
+
+               // Intercept remote close and check for valid reasons for remote closure such as
+               // the remote peer not having a matching node for this subscription or from an
+               // operator manually closing the link etc.
+               bridgeManager.addLinkClosedInterceptor(receiverInfo.getId(), this::remoteLinkClosedInterceptor);
+
+               receiver = new AMQPBridgeAddressDeliveryReceiver(session, receiverInfo, protonReceiver);
+
+               if (linkOpened) {
+                  logger.debug("AMQP Bridge {} address receiver {} completed open", bridgeManager.getName(), receiverInfo);
+               } else {
+                  logger.debug("AMQP Bridge {} address receiver {} rejected by remote", bridgeManager.getName(), receiverInfo);
+               }
+
+               session.addReceiver(protonReceiver, (session, protonRcvr) -> {
+                  return this.receiver;
+               });
+
+               if (linkOpened && remoteOpenHandler != null) {
+                  remoteOpenHandler.accept(this);
+               }
+            } catch (Exception e) {
+               bridgeManager.signalError(e);
+            }
+         });
+      } catch (Exception e) {
+         bridgeManager.signalError(e);
+      }
+
+      connection.flush();
    }
 
    private String generateLinkName() {
-      return "amqp-bridge-" + bridge.getName() +
+      return "amqp-bridge-" + bridgeManager.getName() +
              "-address-receiver-" + receiverInfo.getRemoteAddress() +
-             "-" + bridge.getServer().getNodeID() +
+             "-" + bridgeManager.getServer().getNodeID() +
              "-" + LINK_SEQUENCE_ID.incrementAndGet();
    }
 
@@ -263,6 +197,12 @@ public class AMQPBridgeFromAddressReceiver extends AMQPBridgeReceiver {
       @Override
       public void close(boolean remoteLinkClose) throws ActiveMQAMQPException {
          super.close(remoteLinkClose);
+
+         try {
+            AMQPBridgeManagementSupport.unregisterBridgeReceiver(AMQPBridgeFromAddressReceiver.this);
+         } catch (Exception e) {
+            logger.debug("Error caught when trying to remove bridge address consumer from management", e);
+         }
 
          if (remoteLinkClose && remoteCloseHandler != null) {
             try {
@@ -330,6 +270,12 @@ public class AMQPBridgeFromAddressReceiver extends AMQPBridgeReceiver {
             throw new ActiveMQAMQPInternalErrorException(e.getMessage(), e);
          }
 
+         try {
+            AMQPBridgeManagementSupport.registerBridgeReceiver(AMQPBridgeFromAddressReceiver.this);
+         } catch (Exception e) {
+            logger.debug("Error caught when trying to add bridge address consumer to management", e);
+         }
+
          topUpCreditIfNeeded();
       }
 
@@ -337,7 +283,7 @@ public class AMQPBridgeFromAddressReceiver extends AMQPBridgeReceiver {
       protected void actualDelivery(Message message, Delivery delivery, DeliveryAnnotations deliveryAnnotations, Receiver receiver, Transaction tx) {
          try {
             if (logger.isTraceEnabled()) {
-               logger.trace("AMQP Bridge {} address receiver {} dispatching incoming message: {}", bridge.getName(), receiverInfo, message);
+               logger.trace("AMQP Bridge {} address receiver {} dispatching incoming message: {}", bridgeManager.getName(), receiverInfo, message);
             }
 
             final Message theMessage = transformer.transform(message);
@@ -351,6 +297,8 @@ public class AMQPBridgeFromAddressReceiver extends AMQPBridgeReceiver {
          } catch (Exception e) {
             logger.warn("Inbound delivery for {} encountered an error: {}", receiverInfo, e.getMessage(), e);
             deliveryFailed(delivery, receiver, e);
+         } finally {
+            recordMessageReceived(message);
          }
       }
    }

@@ -27,6 +27,7 @@ import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridg
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.PULL_RECEIVER_BATCH_SIZE;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.RECEIVER_CREDITS;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.RECEIVER_CREDITS_LOW;
+import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.RECEIVER_QUIESCE_TIMEOUT;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.IGNORE_QUEUE_FILTERS;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.DEFAULT_CORE_MESSAGE_TUNNELING_ENABLED;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.DEFAULT_DISABLE_RECEIVER_DEMAND_TRACKING;
@@ -39,6 +40,7 @@ import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridg
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.DEFAULT_MAX_LINK_RECOVERY_ATTEMPTS;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.DEFAULT_DISABLE_RECEIVER_PRIORITY;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.DEFAULT_PULL_CREDIT_BATCH_SIZE;
+import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.DEFAULT_RECEIVER_QUIESCE_TIMEOUT;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.DEFAULT_SEND_SETTLED;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.DISABLE_RECEIVER_DEMAND_TRACKING;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.IGNORE_QUEUE_CONSUMER_FILTERS;
@@ -63,7 +65,6 @@ public class AMQPBridgeConfiguration {
    private final Map<String, Object> properties;
    private final AMQPConnectionContext connection;
 
-   @SuppressWarnings("unchecked")
    public AMQPBridgeConfiguration(AMQPConnectionContext connection, Map<String, Object> properties) {
       Objects.requireNonNull(connection, "Connection provided cannot be null");
 
@@ -72,7 +73,7 @@ public class AMQPBridgeConfiguration {
       if (properties != null && !properties.isEmpty()) {
          this.properties = new HashMap<>(properties);
       } else {
-         this.properties = Collections.EMPTY_MAP;
+         this.properties = Collections.emptyMap();
       }
    }
 
@@ -227,6 +228,20 @@ public class AMQPBridgeConfiguration {
          return Boolean.parseBoolean((String) property);
       } else {
          return DEFAULT_DISABLE_RECEIVER_DEMAND_TRACKING;
+      }
+   }
+
+   /**
+    * @return the receive quiesce timeout when shutting down a {@link Receiver} when local demand is removed.
+    */
+   public int getReceiverQuiesceTimeout() {
+      final Object property = properties.get(RECEIVER_QUIESCE_TIMEOUT);
+      if (property instanceof Number number) {
+         return number.intValue();
+      } else if (property instanceof String string) {
+         return Integer.parseInt(string);
+      } else {
+         return DEFAULT_RECEIVER_QUIESCE_TIMEOUT;
       }
    }
 

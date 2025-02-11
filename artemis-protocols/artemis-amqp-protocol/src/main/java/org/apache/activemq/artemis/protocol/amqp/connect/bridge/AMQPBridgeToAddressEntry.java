@@ -16,7 +16,6 @@
  */
 package org.apache.activemq.artemis.protocol.amqp.connect.bridge;
 
-import java.io.Closeable;
 import java.util.Objects;
 import org.apache.activemq.artemis.core.server.impl.AddressInfo;
 
@@ -25,7 +24,7 @@ import org.apache.activemq.artemis.core.server.impl.AddressInfo;
  * state data needed by the manager that is creating them based on the policy
  * configuration for the AMQP bridge instance.
  */
-public class AMQPBridgeToAddressEntry implements Closeable {
+public class AMQPBridgeToAddressEntry {
 
    private final AddressInfo addressInfo;
 
@@ -40,29 +39,6 @@ public class AMQPBridgeToAddressEntry implements Closeable {
     */
    public AMQPBridgeToAddressEntry(AddressInfo addressInfo) {
       this.addressInfo = addressInfo;
-   }
-
-   @Override
-   public void close() {
-      if (recoveryHandler != null) {
-         try {
-            recoveryHandler.close();
-         } catch (Exception e) {
-            // Nothing to do at this point.
-         } finally {
-            recoveryHandler = null;
-         }
-      }
-
-      if (sender != null) {
-         try {
-            sender.close();
-         } catch (Exception e) {
-            // Nothing to do at this point.
-         } finally {
-            sender = null;
-         }
-      }
    }
 
    /**
@@ -110,11 +86,14 @@ public class AMQPBridgeToAddressEntry implements Closeable {
    /**
     * Clears the currently assigned sender from this entry.
     *
-    * @return this bridged address sender entry.
+    * @return the sender that was stored here previously or null if none was set
     */
-   public AMQPBridgeToAddressEntry clearSender() {
+   public AMQPBridgeSender clearSender() {
+      final AMQPBridgeSender taken = sender;
+
       this.sender = null;
-      return this;
+
+      return taken;
    }
 
    /**
@@ -146,12 +125,19 @@ public class AMQPBridgeToAddressEntry implements Closeable {
    }
 
    /**
-    * Clears any previously assigned link recovery handler.
+    * Closes and clears any previously assigned link recovery handler.
     *
-    * @return this bridged sender entry.
+    * @return this bridged address sender entry.
     */
-   public AMQPBridgeToAddressEntry clearRecoveryHandler() {
-      this.recoveryHandler = null;
+   public AMQPBridgeToAddressEntry releaseRecoveryHandler() {
+      if (recoveryHandler != null) {
+         try {
+            recoveryHandler.close();
+         } finally {
+            recoveryHandler = null;
+         }
+      }
+
       return this;
    }
 }

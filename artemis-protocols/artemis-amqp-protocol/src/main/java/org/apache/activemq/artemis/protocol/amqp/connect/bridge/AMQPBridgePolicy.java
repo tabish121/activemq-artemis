@@ -42,7 +42,6 @@ public abstract class AMQPBridgePolicy {
    private final String filter;
    private final TransformerConfiguration transformerConfig;
 
-   @SuppressWarnings("unchecked")
    public AMQPBridgePolicy(String policyName, Integer priority,
                            String filter, String remoteAddress,
                            String remoteAddressPrefix, String remoteAddressSuffix,
@@ -63,7 +62,7 @@ public abstract class AMQPBridgePolicy {
       this.transformerConfig = transformerConfig;
 
       if (properties == null || properties.isEmpty()) {
-         this.properties = Collections.EMPTY_MAP;
+         this.properties = Collections.emptyMap();
       } else {
          this.properties = Collections.unmodifiableMap(new HashMap<>(properties));
       }
