@@ -736,10 +736,6 @@ class AMQPBridgeToAddressTest  extends AmqpClientTestSupport {
          server.addAddressInfo(new AddressInfo(SimpleString.of("test"), RoutingType.MULTICAST));
 
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
-
-         // add the alternate and it should trigger an attach on that address.
-         server.addAddressInfo(new AddressInfo(SimpleString.of("another"), RoutingType.MULTICAST));
-
          peer.expectAttach().ofSender()
                             .withTarget().withAddress("another").also()
                             .withSource().withAddress("another").also()
@@ -750,10 +746,12 @@ class AMQPBridgeToAddressTest  extends AmqpClientTestSupport {
                                             containsString(server.getNodeID().toString())))
                             .respond();
 
-         // Remove and add the address again which should trigger new attempt
+         // add the alternate and it should trigger an attach on that address.
+         server.addAddressInfo(new AddressInfo(SimpleString.of("another"), RoutingType.MULTICAST));
+         // Remove and later add the address again which should trigger new attempt
          server.removeAddressInfo(SimpleString.of("test"), null, true);
-         server.addAddressInfo(new AddressInfo(SimpleString.of("test"), RoutingType.MULTICAST));
 
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
          peer.expectAttach().ofSender()
                             .withTarget().withAddress("test").also()
                             .withSource().withAddress("test").also()
@@ -763,6 +761,10 @@ class AMQPBridgeToAddressTest  extends AmqpClientTestSupport {
                                             containsString("amqp-bridge"),
                                             containsString(server.getNodeID().toString())))
                             .respond();
+
+         server.addAddressInfo(new AddressInfo(SimpleString.of("test"), RoutingType.MULTICAST));
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
 
          Wait.assertTrue(() -> server.addressQuery(SimpleString.of("test")).isExists());
          Wait.assertTrue(() -> server.bindingQuery(SimpleString.of("test")).getQueueNames().size() > 0);

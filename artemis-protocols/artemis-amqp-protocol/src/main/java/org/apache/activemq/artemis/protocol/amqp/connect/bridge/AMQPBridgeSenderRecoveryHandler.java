@@ -28,8 +28,10 @@ import java.util.function.Consumer;
 /**
  * State object that tracks the current recovery state including attempts count and
  * delay duration tracking.
+ *
+ * @param <E> Link context object used for recovery
  */
-public class AMQPBridgeLinkRecoveryHandler<E> implements Closeable {
+public class AMQPBridgeSenderRecoveryHandler<E> implements Closeable {
 
    private final E linkEntry;
    private final Consumer<E> linkRecoveryConsumer;
@@ -40,7 +42,7 @@ public class AMQPBridgeLinkRecoveryHandler<E> implements Closeable {
    private final AtomicLong nextRecoveryDelay = new AtomicLong();
    private volatile ScheduledFuture<?> recoveryFuture;
 
-   public AMQPBridgeLinkRecoveryHandler(E linkEntry,
+   public AMQPBridgeSenderRecoveryHandler(E linkEntry,
                                         Consumer<E> linkRecoveryConsumer,
                                         AMQPBridgeLinkConfiguration configuration) {
       this.configuration = configuration;

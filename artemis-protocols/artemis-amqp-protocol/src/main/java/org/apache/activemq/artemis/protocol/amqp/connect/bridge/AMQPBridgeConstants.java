@@ -224,4 +224,48 @@ public final class AMQPBridgeConstants {
     */
    public static final int DEFAULT_PRIORITY_ADJUSTMENT_VALUE = -1;
 
+   /**
+    * When a bridge receiver link is being closed due to removal of local demand this timeout
+    * value enforces a maximum wait for drain and processing of in-flight messages before the link
+    * is forcibly terminated with the assumption that the remote is no longer responding.
+    */
+   public static final String RECEIVER_QUIESCE_TIMEOUT = "receiverQuiesceTimeout";
+
+   /**
+    * Default timeout (milliseconds) applied to bridge receivers that are being closed due to removal
+    * of local demand and need to drain link credit and process any in-flight deliveries before closure.
+    * If the timeout elapses before the link has quiesced the link is forcibly closed.
+    */
+   public static final int DEFAULT_RECEIVER_QUIESCE_TIMEOUT = 60_000;
+
+   /**
+    * When a bridge address receiver link has been successfully drained after demand was removed
+    * from the bridged resource, this value controls how long the link can remain in an attached but
+    * idle state before it is closed.
+    */
+   public static final String ADDRESS_RECEIVER_IDLE_TIMEOUT = "addressReceiverIdleTimeout";
+
+   /**
+    * Default timeout (milliseconds) applied to bridge address receivers that have been stopped due to
+    * lack of local demand. The close delay prevent a link from detaching in cases where demand drops and
+    * returns in quick succession allowing for faster recovery. The idle timeout kicks in once the link has
+    * completed its drain of outstanding credit.
+    */
+   public static final int DEFAULT_ADDRESS_RECEIVER_IDLE_TIMEOUT = 5_000;
+
+   /**
+    * When a bridge queue receiver link has been successfully drained after demand was removed
+    * from the bridged resource, this value controls how long the link can remain in an attached but
+    * idle state before it is closed.
+    */
+   public static final String QUEUE_RECEIVER_IDLE_TIMEOUT = "queueReceiverIdleTimeout";
+
+   /**
+    * Default timeout (milliseconds) applied to bridge queue receivers that have been stopped due to
+    * lack of local demand. The close delay prevent a link from detaching in cases where demand drops and
+    * returns in quick succession allowing for faster recovery. The idle timeout kicks in once the link has
+    * completed its drain of outstanding credit.
+    */
+   public static final int DEFAULT_QUEUE_RECEIVER_IDLE_TIMEOUT = 60_000;
+
 }

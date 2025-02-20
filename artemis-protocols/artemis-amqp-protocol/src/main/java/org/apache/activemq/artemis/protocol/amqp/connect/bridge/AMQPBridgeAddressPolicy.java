@@ -45,7 +45,6 @@ public final class AMQPBridgeAddressPolicy extends AMQPBridgePolicy implements B
 
    private final boolean includeDivertBindings;
 
-   @SuppressWarnings("unchecked")
    public AMQPBridgeAddressPolicy(String policyName, boolean includeDivertBindings,
                                   Integer priority, String filter, String remoteAddress,
                                   String remoteAddressPrefix, String remoteAddressSuffix,
@@ -60,8 +59,8 @@ public final class AMQPBridgeAddressPolicy extends AMQPBridgePolicy implements B
 
       this.includeDivertBindings = includeDivertBindings;
 
-      this.includes = Collections.unmodifiableCollection(includeAddresses == null ? Collections.EMPTY_LIST : includeAddresses);
-      this.excludes = Collections.unmodifiableCollection(excludeAddresses == null ? Collections.EMPTY_LIST : excludeAddresses);
+      this.includes = Collections.unmodifiableCollection(includeAddresses == null ? Collections.emptyList() : includeAddresses);
+      this.excludes = Collections.unmodifiableCollection(excludeAddresses == null ? Collections.emptyList() : excludeAddresses);
 
       // Create Matchers from configured includes and excludes for use when matching broker resources
       includes.forEach((address) -> includesMatchers.add(new AddressMatcher(address, wildcardConfig)));

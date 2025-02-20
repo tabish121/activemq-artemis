@@ -262,10 +262,10 @@ public final class AMQPFederationQueueConsumer extends AMQPFederationConsumer {
 
       @Override
       public void close(boolean remoteLinkClose) throws ActiveMQAMQPException {
+         super.close(remoteLinkClose);
+
          if (!closed) {
             closed = true;
-
-            super.close(remoteLinkClose);
 
             try {
                federation.unregisterFederationConsumerManagement(AMQPFederationQueueConsumer.this);

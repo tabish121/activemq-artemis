@@ -27,14 +27,11 @@ import org.apache.activemq.artemis.api.core.SimpleString;
 import org.apache.activemq.artemis.core.postoffice.Binding;
 import org.apache.activemq.artemis.core.postoffice.QueueBinding;
 import org.apache.activemq.artemis.core.postoffice.impl.DivertBinding;
-import org.apache.activemq.artemis.core.server.ActiveMQServer;
 import org.apache.activemq.artemis.core.server.ActiveMQServerLogger;
 import org.apache.activemq.artemis.core.server.impl.AddressInfo;
 import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerAddressPlugin;
-import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerBindingPlugin;
 import org.apache.activemq.artemis.core.transaction.Transaction;
-import org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeReceiverInfo.Role;
-import org.apache.activemq.artemis.protocol.amqp.proton.AMQPSessionContext;
+import org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeReceiverInfo.ReceiverRole;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,93 +39,29 @@ import org.slf4j.LoggerFactory;
  * AMQP Bridge policy manager that tracks local addresses that match the policy configurations
  * for local demand and creates receivers to the remote peer.
  */
-public class AMQPBridgeFromAddressPolicyManager implements AMQPBridgePolicyManager, ActiveMQServerBindingPlugin, ActiveMQServerAddressPlugin {
+public final class AMQPBridgeFromAddressPolicyManager extends AMQPBridgeFromPolicyManager implements ActiveMQServerAddressPlugin {
 
    private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
-   private final ActiveMQServer server;
-   private final AMQPBridgeManager bridge;
    private final AMQPBridgeAddressPolicy policy;
-   private final Map<String, AMQPBridgeFromAddressEntry> demandTracking = new HashMap<>();
+   private final Map<String, AMQPBridgeAddressReceiverManager> bridgeReceivers = new HashMap<>();
    private final Map<DivertBinding, Set<QueueBinding>> divertsTracking = new HashMap<>();
 
-   private volatile boolean started;
-   private volatile boolean connected;
-   private volatile AMQPBridgeReceiverConfiguration configuration;
-   private volatile AMQPSessionContext session;
+   public AMQPBridgeFromAddressPolicyManager(AMQPBridgeManager bridge, AMQPBridgeMetrics metrics, AMQPBridgeAddressPolicy addressPolicy) {
+      super(bridge, metrics, addressPolicy.getPolicyName(), AMQPBridgeType.BRIDGE_FROM_ADDRESS);
 
-   public AMQPBridgeFromAddressPolicyManager(AMQPBridgeManager bridge, AMQPBridgeAddressPolicy addressPolicy) {
-      Objects.requireNonNull(bridge, "The AMQP Bridge instance cannot be null");
       Objects.requireNonNull(addressPolicy, "The Address match policy cannot be null");
 
-      this.bridge = bridge;
       this.policy = addressPolicy;
-      this.server = bridge.getServer();
    }
 
-   /**
-    * @return the policy that defines the bridged address this policy manager monitors.
-    */
+   @Override
    public AMQPBridgeAddressPolicy getPolicy() {
       return policy;
    }
 
    @Override
-   public boolean isStarted() {
-      return started;
-   }
-
-   @Override
-   public synchronized void start() throws ActiveMQException {
-      if (!started && bridge.isStarted()) {
-         started = true;
-         if (connected) {
-            startManagerServices();
-         }
-      }
-   }
-
-   @Override
-   public synchronized void stop() {
-      if (started) {
-         started = false;
-         stopManagerServices();
-      }
-   }
-
-
-   @Override
-   public synchronized void connectionDropped() {
-      connected = false;
-
-      if (started) {
-         stopManagerServices();
-      }
-   }
-
-   @Override
-   public synchronized void connectionRestored(AMQPSessionContext session, AMQPBridgeConfiguration configuration) throws ActiveMQException {
-      this.connected = true;
-      this.configuration = new AMQPBridgeReceiverConfiguration(configuration, policy.getProperties());
-      this.session = session;
-
-      if (started) {
-         startManagerServices();
-      }
-   }
-
-   private void stopManagerServices() {
-      server.unRegisterBrokerPlugin(this);
-      demandTracking.forEach((k, v) -> {
-         v.close();
-      });
-      demandTracking.clear();
-      divertsTracking.clear();
-   }
-
-   private void startManagerServices() {
-      server.registerBrokerPlugin(this);
-
+   protected void scanManagedResources() {
       if (configuration.isReceiverDemandTrackingDisabled()) {
          scanAllAddresses();
       } else {
@@ -137,26 +70,50 @@ public class AMQPBridgeFromAddressPolicyManager implements AMQPBridgePolicyManag
    }
 
    @Override
-   public synchronized void afterRemoveAddress(SimpleString address, AddressInfo addressInfo) throws ActiveMQException {
-      if (started) {
-         final AMQPBridgeFromAddressEntry entry = demandTracking.remove(address.toString());
+   protected void safeCleanupManagerResources(boolean force) {
+      try {
+         bridgeReceivers.values().forEach((manager) -> {
+            if (manager != null) {
+               if (isConnected() && !force) {
+                  manager.shutdown();
+               } else {
+                  manager.shutdownNow();
+               }
+            }
+         });
+      } finally {
+         bridgeReceivers.clear();
+         divertsTracking.clear();
+      }
+   }
 
-         if (entry != null) {
-            entry.close();
+   @Override
+   public synchronized void afterRemoveAddress(SimpleString address, AddressInfo addressInfo) throws ActiveMQException {
+      if (isActive()) {
+         final AMQPBridgeReceiverManager manager = bridgeReceivers.remove(address.toString());
+
+         if (manager != null) {
+            // Demand is gone because the Address is gone and any in-flight messages can be
+            // allowed to be released back to the remote as they will not be processed.
+            // We removed the receiver information from demand tracking to prevent build up
+            // of data for entries that may never return and to prevent interference from the
+            // next set of events which will be the close of all local receivers for this now
+            // removed Address.
+            manager.shutdownNow();
          }
       }
    }
 
    @Override
    public synchronized void afterRemoveBinding(Binding binding, Transaction tx, boolean deleteData) throws ActiveMQException {
-      if (started && !configuration.isReceiverDemandTrackingDisabled()) {
+      if (isActive() && !configuration.isReceiverDemandTrackingDisabled()) {
          if (binding instanceof QueueBinding) {
-            final AMQPBridgeFromAddressEntry entry = demandTracking.get(binding.getAddress().toString());
+            final AMQPBridgeAddressReceiverManager manager = bridgeReceivers.get(binding.getAddress().toString());
 
-            if (entry != null) {
+            if (manager != null) {
                // This is QueueBinding that was mapped to a bridged address so we can directly remove
                // demand from the bridge receiver and close it if demand is now gone.
-               tryRemoveDemandOnAddress(entry, binding);
+               tryRemoveDemandOnAddress(manager, binding);
             } else if (policy.isIncludeDivertBindings()) {
                // See if there is any matching diverts that are forwarding to an address where this QueueBinding
                // is bound and remove the mapping for any matches, diverts can have a composite set of address
@@ -174,13 +131,12 @@ public class AMQPBridgeFromAddressPolicyManager implements AMQPBridgePolicyManag
                      divertEntry.getValue().remove(binding);
 
                      if (divertEntry.getValue().isEmpty()) {
-                        tryRemoveDemandOnAddress(demandTracking.get(sourceAddress), divertEntry.getKey());
+                        tryRemoveDemandOnAddress(bridgeReceivers.get(sourceAddress), divertEntry.getKey());
                      }
                   }
                });
             }
-         } else if (policy.isIncludeDivertBindings() && binding instanceof DivertBinding) {
-            final DivertBinding divert = (DivertBinding) binding;
+         } else if (policy.isIncludeDivertBindings() && binding instanceof DivertBinding divert) {
 
             if (divertsTracking.remove(divert) != null) {
                // The divert binding is treated as one unit of demand on a bridged address and when
@@ -188,7 +144,7 @@ public class AMQPBridgeFromAddressPolicyManager implements AMQPBridgePolicyManag
                // still remaining on the divert forwards. If the divert demand was the only thing
                // keeping the bridge address receiver open this will result in it bring closed.
                try {
-                  tryRemoveDemandOnAddress(demandTracking.get(divert.getAddress().toString()), divert);
+                  tryRemoveDemandOnAddress(bridgeReceivers.get(divert.getAddress().toString()), divert);
                } catch (Exception e) {
                   logger.warn("Error looking up binding for divert forward address {}", divert.getDivert().getForwardAddress(), e);
                }
@@ -197,19 +153,10 @@ public class AMQPBridgeFromAddressPolicyManager implements AMQPBridgePolicyManag
       }
    }
 
-   protected final void tryRemoveDemandOnAddress(AMQPBridgeFromAddressEntry entry, Binding binding) {
-      if (entry != null) {
-         entry.removeDemand(binding);
-
-         logger.trace("Reducing demand on bridged address {}, remaining demand? {}", entry.getLocalAddress(), entry.hasDemand());
-
-         if (!entry.hasDemand()) {
-            try {
-               entry.close();
-            } finally {
-               demandTracking.remove(entry.getLocalAddress());
-            }
-         }
+   private void tryRemoveDemandOnAddress(AMQPBridgeAddressReceiverManager manager, Binding binding) {
+      if (manager != null) {
+         logger.trace("Reducing demand on bridged address {}", manager.getAddress());
+         manager.removeDemand(binding.getUniqueName().toString());
       }
    }
 
@@ -218,7 +165,7 @@ public class AMQPBridgeFromAddressPolicyManager implements AMQPBridgePolicyManag
     * create a receiver for that address, we don't monitor any other demand as we just want to receive
     * for as long as the lifetime of the address.
     */
-   protected final void scanAllAddresses() {
+   private void scanAllAddresses() {
       server.getPostOffice()
             .getAddresses()
             .stream()
@@ -233,7 +180,7 @@ public class AMQPBridgeFromAddressPolicyManager implements AMQPBridgePolicyManag
     * just to reduce the result set but the check call should also filter as
     * during normal operations divert bindings could be added.
     */
-   protected final void scanAllBindings() {
+   private void scanAllBindings() {
       server.getPostOffice()
             .getAllBindings()
             .filter(binding -> binding instanceof QueueBinding || (policy.isIncludeDivertBindings() && binding instanceof DivertBinding))
@@ -242,23 +189,21 @@ public class AMQPBridgeFromAddressPolicyManager implements AMQPBridgePolicyManag
 
    @Override
    public synchronized void afterAddAddress(AddressInfo addressInfo, boolean reload) {
-      if (started && policy.test(addressInfo)) {
+      if (isActive() && policy.test(addressInfo)) {
          // If demand tracking is disabled we create a receiver regardless of other demand
          if (configuration.isReceiverDemandTrackingDisabled()) {
             createOrUpdateAddressReceiverForUnboundDemand(addressInfo);
-         } else {
-            if (policy.isIncludeDivertBindings()) {
-               try {
-                  // A Divert can exist in configuration prior to the address having been auto created etc so
-                  // upon address add this check needs to be run to capture addresses that now match the divert.
-                  server.getPostOffice()
-                        .getDirectBindings(addressInfo.getName())
-                        .stream()
-                        .filter(binding -> binding instanceof DivertBinding)
-                        .forEach(this::checkBindingForMatch);
-               } catch (Exception e) {
-                  logger.warn("Error looking up bindings for address {}.", addressInfo, e);
-               }
+         } else if (policy.isIncludeDivertBindings()) {
+            try {
+               // A Divert can exist in configuration prior to the address having been auto created etc so
+               // upon address add this check needs to be run to capture addresses that now match the divert.
+               server.getPostOffice()
+                     .getDirectBindings(addressInfo.getName())
+                     .stream()
+                     .filter(binding -> binding instanceof DivertBinding)
+                     .forEach(this::checkBindingForMatch);
+            } catch (Exception e) {
+               logger.warn("Error looking up bindings for address {}.", addressInfo, e);
             }
          }
       }
@@ -266,7 +211,7 @@ public class AMQPBridgeFromAddressPolicyManager implements AMQPBridgePolicyManag
 
    @Override
    public synchronized void afterAddBinding(Binding binding) {
-      if (started && !configuration.isReceiverDemandTrackingDisabled()) {
+      if (isActive() && !configuration.isReceiverDemandTrackingDisabled()) {
          checkBindingForMatch(binding);
       }
    }
@@ -280,9 +225,8 @@ public class AMQPBridgeFromAddressPolicyManager implements AMQPBridgePolicyManag
     * @param binding
     *       The binding that should be checked against the bridge from address policy,
     */
-   protected final void checkBindingForMatch(Binding binding) {
-      if (binding instanceof QueueBinding) {
-         final QueueBinding queueBinding = (QueueBinding) binding;
+   private void checkBindingForMatch(Binding binding) {
+      if (binding instanceof QueueBinding queueBinding) {
          final AddressInfo addressInfo = server.getPostOffice().getAddressInfo(binding.getAddress());
 
          if (testIfAddressMatchesPolicy(addressInfo)) {
@@ -290,12 +234,12 @@ public class AMQPBridgeFromAddressPolicyManager implements AMQPBridgePolicyManag
          } else {
             reactIfQueueBindingMatchesAnyDivertTarget(queueBinding);
          }
-      } else if (binding instanceof DivertBinding) {
-         reactIfAnyQueueBindingMatchesDivertTarget((DivertBinding) binding);
+      } else if (binding instanceof DivertBinding divertBinding) {
+         reactIfAnyQueueBindingMatchesDivertTarget(divertBinding);
       }
    }
 
-   protected final void reactIfAnyQueueBindingMatchesDivertTarget(DivertBinding divertBinding) {
+   private void reactIfAnyQueueBindingMatchesDivertTarget(DivertBinding divertBinding) {
       if (!policy.isIncludeDivertBindings()) {
          return;
       }
@@ -335,7 +279,7 @@ public class AMQPBridgeFromAddressPolicyManager implements AMQPBridgePolicyManag
       }
    }
 
-   protected final void reactIfQueueBindingMatchesAnyDivertTarget(QueueBinding queueBinding) {
+   private void reactIfQueueBindingMatchesAnyDivertTarget(QueueBinding queueBinding) {
       if (!policy.isIncludeDivertBindings()) {
          return;
       }
@@ -374,130 +318,33 @@ public class AMQPBridgeFromAddressPolicyManager implements AMQPBridgePolicyManag
       return false;
    }
 
-   protected final void createOrUpdateAddressReceiverForUnboundDemand(AddressInfo addressInfo) {
+   private void createOrUpdateAddressReceiverForUnboundDemand(AddressInfo addressInfo) {
       logger.trace("AMQP Bridge Address Policy matched on address: {} when demand tracking disabled", addressInfo);
-
-      final String addressName = addressInfo.getName().toString();
-      final AMQPBridgeFromAddressEntry entry;
-
-      // Check for instance of this address and force demand, we should never find existing entry
-      // but we handle it here as a best practice.
-      if (demandTracking.containsKey(addressName)) {
-         entry = demandTracking.get(addressName);
-      } else {
-         entry = new AMQPBridgeFromAddressEntry(addressInfo);
-         demandTracking.put(addressName, entry);
-      }
-
-      entry.forceDemand();
-
-      tryCreateBridgeReceiverForAddress(entry);
+      createOrUpdateAddressReceiver(addressInfo, addressInfo.getName().toString());
    }
 
-   protected final void createOrUpdateAddressReceiverForBinding(AddressInfo addressInfo, Binding binding) {
+   private void createOrUpdateAddressReceiverForBinding(AddressInfo addressInfo, Binding binding) {
       logger.trace("AMQP Bridge Address Policy matched on for demand on address: {} : binding: {}", addressInfo, binding);
+      createOrUpdateAddressReceiver(addressInfo, binding.getUniqueName().toString());
+   }
 
+   private void createOrUpdateAddressReceiver(AddressInfo addressInfo, String demandId) {
       final String addressName = addressInfo.getName().toString();
-      final AMQPBridgeFromAddressEntry entry;
+      final AMQPBridgeAddressReceiverManager manager;
 
       // Check for existing receiver add demand from a additional local consumer to ensure
       // the remote receiver remains active until all local demand is withdrawn.
-      if (demandTracking.containsKey(addressName)) {
-         entry = demandTracking.get(addressName);
+      if (bridgeReceivers.containsKey(addressName)) {
+         manager = bridgeReceivers.get(addressName);
       } else {
-         entry = new AMQPBridgeFromAddressEntry(addressInfo);
-         demandTracking.put(addressName, entry);
+         manager = new AMQPBridgeAddressReceiverManager(this, configuration, addressInfo);
+         bridgeReceivers.put(addressName, manager);
       }
 
-      entry.addDemand(binding);
-
-      tryCreateBridgeReceiverForAddress(entry);
+      manager.addDemand(demandId);
    }
 
-   private void tryCreateBridgeReceiverForAddress(AMQPBridgeFromAddressEntry addressEntry) {
-      final AddressInfo addressInfo = addressEntry.getAddressInfo();
-
-      if (addressEntry.hasDemand() && !addressEntry.hasReceiver()) {
-         logger.trace("AMQP Brigde from Address Policy manager creating remote receiver for address: {}", addressInfo);
-
-         final AMQPBridgeReceiverInfo receiverInfo = createReceiverInfo(addressInfo);
-         final AMQPBridgeReceiver addressReceiver = createBridgeReceiver(receiverInfo);
-
-         // Handle remote open and cancel any additional link recovery attempts  Ensure that
-         // thread safety is accounted for here as the notification come from the connection
-         // thread.
-         addressReceiver.setRemoteOpenHandler(openedReceiver -> {
-            synchronized (this) {
-               final AMQPBridgeLinkRecoveryHandler<AMQPBridgeFromAddressEntry> recoveryHandler = addressEntry.getRecoveryHandler();
-
-               // We've connected so any existing recovery handler can now be closed and cleared
-               // as we will create a new one if the link is forced closed by the remote and we
-               // determine the outcome of that is not terminal to the connection.
-               if (recoveryHandler != null) {
-                  try {
-                     recoveryHandler.close();
-                  } finally {
-                     addressEntry.clearRecoveryHandler();
-                  }
-               }
-            }
-         });
-
-         // Handle remote close with remove of receiver which means that future demand will
-         // attempt to create a new receiver for that demand. Ensure that thread safety is
-         // accounted for here as the notification come from the connection thread.
-         addressReceiver.setRemoteClosedHandler(closedReceiver -> {
-            synchronized (this) {
-               try {
-                  final AMQPBridgeFromAddressEntry tracked = demandTracking.get(closedReceiver.getReceiverInfo().getLocalAddress());
-
-                  if (tracked != null) {
-                     tracked.clearReceiver();
-                  }
-               } finally {
-                  closedReceiver.close();
-               }
-
-               if (configuration.isLinkRecoveryEnabled()) {
-                  // If the close came from a previous attempt that is itself a recovery we use the
-                  // existing entry's recovery handler, otherwise we need to create a new handler
-                  // to deal with link recovery.
-                  AMQPBridgeLinkRecoveryHandler<AMQPBridgeFromAddressEntry> recoveryHandler = addressEntry.getRecoveryHandler();
-                  if (recoveryHandler == null) {
-                     addressEntry.setRecoveryHandler(
-                        recoveryHandler = new AMQPBridgeLinkRecoveryHandler<>(addressEntry, this::linkRecoveryHandler, configuration));
-                  }
-
-                  final boolean scheduled = recoveryHandler.tryScheduleNextRecovery(server.getScheduledPool());
-
-                  if (!scheduled) {
-                     try {
-                        recoveryHandler.close();
-                     } finally {
-                        addressEntry.clearRecoveryHandler();
-                     }
-                  }
-               }
-            }
-         });
-
-         addressEntry.setReceiver(addressReceiver);
-
-         addressReceiver.start();
-      }
-   }
-
-   protected final void linkRecoveryHandler(AMQPBridgeFromAddressEntry entry) {
-      synchronized (this) {
-         if (started) {
-            // This will check for existing demand and or an existing receiver
-            // in order to prevent duplicate links so we don't need to check here.
-            tryCreateBridgeReceiverForAddress(entry);
-         }
-      }
-   }
-
-   protected AMQPBridgeReceiverInfo createReceiverInfo(AddressInfo address) {
+   private AMQPBridgeReceiverInfo createReceiverInfo(AddressInfo address) {
       final String addressName = address.getName().toString();
       final StringBuilder remoteAddressBuilder = new StringBuilder();
 
@@ -515,7 +362,7 @@ public class AMQPBridgeFromAddressPolicyManager implements AMQPBridgePolicyManag
          remoteAddressBuilder.append(policy.getRemoteAddressSuffix());
       }
 
-      return new AMQPBridgeReceiverInfo(Role.ADDRESS_RECEIVER,
+      return new AMQPBridgeReceiverInfo(ReceiverRole.ADDRESS_RECEIVER,
                                         addressName,
                                         null,
                                         address.getRoutingType(),
@@ -524,7 +371,7 @@ public class AMQPBridgeFromAddressPolicyManager implements AMQPBridgePolicyManag
                                         configuration.isReceiverPriorityDisabled() ? null : policy.getPriority());
    }
 
-   protected AMQPBridgeReceiver createBridgeReceiver(AMQPBridgeReceiverInfo receiverInfo) {
+   private AMQPBridgeReceiver createBridgeReceiver(AMQPBridgeReceiverInfo receiverInfo) {
       Objects.requireNonNull(receiverInfo, "AMQP Bridge Address receiver information object was null");
 
       if (logger.isTraceEnabled()) {
@@ -533,10 +380,10 @@ public class AMQPBridgeFromAddressPolicyManager implements AMQPBridgePolicyManag
 
       // Don't initiate anything yet as the caller might need to register error handlers etc
       // before the attach is sent otherwise they could miss the failure case.
-      return new AMQPBridgeFromAddressReceiver(bridge, configuration, session, receiverInfo, policy);
+      return new AMQPBridgeFromAddressReceiver(this, configuration, session, receiverInfo, policy, metrics.newReceiverMetrics());
    }
 
-   protected boolean testIfAddressMatchesPolicy(AddressInfo addressInfo) {
+   private boolean testIfAddressMatchesPolicy(AddressInfo addressInfo) {
       if (!policy.test(addressInfo)) {
          return false;
       }
@@ -548,6 +395,38 @@ public class AMQPBridgeFromAddressPolicyManager implements AMQPBridgePolicyManag
          return false;
       } else {
          return true;
+      }
+   }
+
+   private static class AMQPBridgeAddressReceiverManager extends AMQPBridgeReceiverManager {
+
+      private final AMQPBridgeFromAddressPolicyManager manager;
+      private final AddressInfo addressInfo;
+
+      AMQPBridgeAddressReceiverManager(AMQPBridgeFromAddressPolicyManager manager, AMQPBridgeReceiverConfiguration configuration, AddressInfo addressInfo) {
+         super(manager, configuration);
+
+         this.manager = manager;
+         this.addressInfo = addressInfo;
+      }
+
+      /**
+       * @return the address information that this entry is acting to federate.
+       */
+      public AddressInfo getAddressInfo() {
+         return addressInfo;
+      }
+
+      /**
+       * @return the address that this entry is acting to federate.
+       */
+      public String getAddress() {
+         return getAddressInfo().getName().toString();
+      }
+
+      @Override
+      protected AMQPBridgeReceiver createBridgeReceiver() {
+         return manager.createBridgeReceiver(manager.createReceiverInfo(addressInfo));
       }
    }
 }

@@ -39,7 +39,6 @@ public final class AMQPBridgeQueuePolicy extends AMQPBridgePolicy implements BiP
 
    private final int priorityAdjustment;
 
-   @SuppressWarnings("unchecked")
    public AMQPBridgeQueuePolicy(String policyName, Integer priority, int priorityAdjustment,
                                 String filter, String remoteAddress, String remoteAddressPrefix, String remoteAddressSuffix,
                                 Collection<Symbol> remoteTerminusCapabilities,
@@ -53,8 +52,8 @@ public final class AMQPBridgeQueuePolicy extends AMQPBridgePolicy implements BiP
 
       this.priorityAdjustment = priorityAdjustment;
 
-      this.includes = Collections.unmodifiableCollection(includeQueues == null ? Collections.EMPTY_LIST : includeQueues);
-      this.excludes = Collections.unmodifiableCollection(excludeQueues == null ? Collections.EMPTY_LIST : excludeQueues);
+      this.includes = Collections.unmodifiableCollection(includeQueues == null ? Collections.emptyList() : includeQueues);
+      this.excludes = Collections.unmodifiableCollection(excludeQueues == null ? Collections.emptyList() : excludeQueues);
 
       // Create Matchers from configured includes and excludes for use when matching broker resources
       includes.forEach((entry) -> includeMatchers.add(new QueueMatcher(entry.getKey(), entry.getValue(), wildcardConfig)));

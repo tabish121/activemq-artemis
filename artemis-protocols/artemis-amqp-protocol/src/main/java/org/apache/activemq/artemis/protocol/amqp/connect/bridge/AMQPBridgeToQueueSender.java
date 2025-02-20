@@ -21,23 +21,21 @@ import java.lang.invoke.MethodHandles;
 import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+
 import org.apache.activemq.artemis.api.config.ActiveMQDefaultConfiguration;
 import org.apache.activemq.artemis.api.core.RoutingType;
 import org.apache.activemq.artemis.api.core.SimpleString;
 import org.apache.activemq.artemis.core.server.AddressQueryResult;
-import org.apache.activemq.artemis.core.server.MessageReference;
 import org.apache.activemq.artemis.core.server.QueueQueryResult;
-import org.apache.activemq.artemis.protocol.amqp.broker.AMQPLargeMessage;
+import org.apache.activemq.artemis.core.server.ServerConsumer;
 import org.apache.activemq.artemis.protocol.amqp.broker.AMQPSessionCallback;
+import org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeMetrics.SenderMetrics;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPException;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPInternalErrorException;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPNotFoundException;
 import org.apache.activemq.artemis.protocol.amqp.logger.ActiveMQAMQPProtocolMessageBundle;
 import org.apache.activemq.artemis.protocol.amqp.proton.AMQPConnectionContext;
-import org.apache.activemq.artemis.protocol.amqp.proton.AMQPLargeMessageWriter;
-import org.apache.activemq.artemis.protocol.amqp.proton.AMQPMessageWriter;
 import org.apache.activemq.artemis.protocol.amqp.proton.AMQPSessionContext;
-import org.apache.activemq.artemis.protocol.amqp.proton.MessageWriter;
 import org.apache.activemq.artemis.protocol.amqp.proton.ProtonServerSenderContext;
 import org.apache.activemq.artemis.protocol.amqp.proton.SenderController;
 import org.apache.qpid.proton.amqp.messaging.Source;
@@ -57,12 +55,12 @@ public class AMQPBridgeToQueueSender extends AMQPBridgeSender {
 
    private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
-   public AMQPBridgeToQueueSender(AMQPBridgeManager bridge,
+   public AMQPBridgeToQueueSender(AMQPBridgeToPolicyManager policyManager,
                                   AMQPBridgeSenderConfiguration configuration,
                                   AMQPSessionContext session,
                                   AMQPBridgeSenderInfo senderInfo,
-                                  AMQPBridgeQueuePolicy policy) {
-      super(bridge, configuration, session, senderInfo, policy);
+                                  SenderMetrics metrics) {
+      super(policyManager, configuration, session, senderInfo, metrics);
    }
 
    @Override
@@ -71,120 +69,90 @@ public class AMQPBridgeToQueueSender extends AMQPBridgeSender {
    }
 
    @Override
-   protected void asyncCloseSender() {
-      connection.runLater(() -> {
-         if (senderContext != null) {
+   protected void doCreateSender() {
+      try {
+         final Sender protonSender = session.getSession().sender(generateLinkName());
+         final Target target = new Target();
+         final Source source = new Source();
+         final String address = senderInfo.getRemoteAddress();
+
+         source.setAddress(senderInfo.getLocalFqqn());
+
+         target.setAddress(address);
+         target.setDurable(TerminusDurability.NONE);
+         target.setExpiryPolicy(TerminusExpiryPolicy.LINK_DETACH);
+         target.setCapabilities(getRemoteTerminusCapabilities());
+
+         protonSender.setSenderSettleMode(configuration.isUsingPresettledSenders() ? SenderSettleMode.SETTLED : SenderSettleMode.UNSETTLED);
+         protonSender.setReceiverSettleMode(ReceiverSettleMode.FIRST);
+         protonSender.setTarget(target);
+         protonSender.setSource(source);
+         protonSender.open();
+
+         final ScheduledFuture<?> openTimeoutTask;
+         final AtomicBoolean openTimedOut = new AtomicBoolean(false);
+
+         if (configuration.getLinkAttachTimeout() > 0) {
+            openTimeoutTask = bridgeManager.getServer().getScheduledPool().schedule(() -> {
+               openTimedOut.set(true);
+               bridgeManager.signalResourceCreateError(ActiveMQAMQPProtocolMessageBundle.BUNDLE.brokerConnectionTimeout());
+            }, configuration.getLinkAttachTimeout(), TimeUnit.SECONDS);
+         } else {
+            openTimeoutTask = null;
+         }
+
+         this.protonSender = protonSender;
+
+         protonSender.attachments().set(AMQP_LINK_INITIALIZER_KEY, Runnable.class, () -> {
             try {
-               senderContext.close(null);
-            } catch (ActiveMQAMQPException e) {
-            } finally {
-               senderContext = null;
-            }
-         }
-
-         // Need to track the proton senderContext and close it here as the default
-         // context implementation doesn't do that and could result in no detach
-         // being sent in some cases and possible resources leaks.
-         if (protonSender != null) {
-            try {
-               protonSender.close();
-            } finally {
-               protonSender = null;
-            }
-         }
-
-         connection.flush();
-      });
-   }
-
-   @Override
-   protected void asyncCreateSender() {
-      connection.runLater(() -> {
-         if (closed) {
-            return;
-         }
-
-         try {
-            final Sender protonSender = session.getSession().sender(generateLinkName());
-            final Target target = new Target();
-            final Source source = new Source();
-            final String address = senderInfo.getRemoteAddress();
-
-            source.setAddress(senderInfo.getLocalFqqn());
-
-            target.setAddress(address);
-            target.setDurable(TerminusDurability.NONE);
-            target.setExpiryPolicy(TerminusExpiryPolicy.LINK_DETACH);
-            target.setCapabilities(getRemoteTerminusCapabilities());
-
-            protonSender.setSenderSettleMode(configuration.isUsingPresettledSenders() ? SenderSettleMode.SETTLED : SenderSettleMode.UNSETTLED);
-            protonSender.setReceiverSettleMode(ReceiverSettleMode.FIRST);
-            protonSender.setTarget(target);
-            protonSender.setSource(source);
-            protonSender.open();
-
-            final ScheduledFuture<?> openTimeoutTask;
-            final AtomicBoolean openTimedOut = new AtomicBoolean(false);
-
-            if (configuration.getLinkAttachTimeout() > 0) {
-               openTimeoutTask = bridge.getServer().getScheduledPool().schedule(() -> {
-                  openTimedOut.set(true);
-                  bridge.signalResourceCreateError(ActiveMQAMQPProtocolMessageBundle.BUNDLE.brokerConnectionTimeout());
-               }, configuration.getLinkAttachTimeout(), TimeUnit.SECONDS);
-            } else {
-               openTimeoutTask = null;
-            }
-
-            this.protonSender = protonSender;
-
-            protonSender.attachments().set(AMQP_LINK_INITIALIZER_KEY, Runnable.class, () -> {
-               try {
-                  if (openTimeoutTask != null) {
-                     openTimeoutTask.cancel(false);
-                  }
-
-                  if (openTimedOut.get()) {
-                     return;
-                  }
-
-                  final boolean linkOpened = protonSender.getRemoteTarget() != null;
-
-                  if (linkOpened) {
-                     logger.debug("AMQP Bridge {} queue senderContext {} completed open", bridge.getName(), senderInfo);
-                  } else {
-                     logger.debug("AMQP Bridge {} queue senderContext {} rejected by remote", bridge.getName(), senderInfo);
-                  }
-
-                  // Intercept remote close and check for valid reasons for remote closure such as
-                  // the remote peer not having a matching node for this subscription or from an
-                  // operator manually closing the link etc.
-                  bridge.addLinkClosedInterceptor(senderInfo.getId(), this::remoteLinkClosedInterceptor);
-
-                  senderContext = new AMQPBridgeQueueSenderContext(
-                     connection, protonSender, session, session.getSessionSPI(), new AMQPBridgeQueueDeliverySender(senderInfo));
-
-                  session.addSender(protonSender, senderContext);
-
-                  if (linkOpened && remoteOpenHandler != null) {
-                     remoteOpenHandler.accept(this);
-                  }
-
-               } catch (Exception e) {
-                  bridge.signalError(e);
+               if (openTimeoutTask != null) {
+                  openTimeoutTask.cancel(false);
                }
-            });
-         } catch (Exception e) {
-            bridge.signalError(e);
-         }
 
-         connection.flush();
-      });
+               if (openTimedOut.get()) {
+                  return;
+               }
+
+               final boolean linkOpened = protonSender.getRemoteTarget() != null;
+
+               if (linkOpened) {
+                  logger.debug("AMQP Bridge {} queue senderContext {} completed open", bridgeManager.getName(), senderInfo);
+               } else {
+                  logger.debug("AMQP Bridge {} queue senderContext {} rejected by remote", bridgeManager.getName(), senderInfo);
+               }
+
+               // Intercept remote close and check for valid reasons for remote closure such as
+               // the remote peer not having a matching node for this subscription or from an
+               // operator manually closing the link etc.
+               bridgeManager.addLinkClosedInterceptor(senderInfo.getId(), this::remoteLinkClosedInterceptor);
+
+               final AMQPBridgeToQueueSenderController senderController =
+                  new AMQPBridgeToQueueSenderController(senderInfo, getPolicyManager(), session, metrics);
+
+               senderContext = new AMQPBridgeQueueSenderContext(
+                  connection, protonSender, session, session.getSessionSPI(), senderController);
+
+               session.addSender(protonSender, senderContext);
+
+               if (linkOpened && remoteOpenHandler != null) {
+                  remoteOpenHandler.accept(this);
+               }
+
+            } catch (Exception e) {
+               bridgeManager.signalError(e);
+            }
+         });
+      } catch (Exception e) {
+         bridgeManager.signalError(e);
+      }
+
+      connection.flush();
    }
 
    private String generateLinkName() {
-      return "amqp-bridge-" + bridge.getName() +
+      return "amqp-bridge-" + bridgeManager.getName() +
              "-queue-sender-" + senderInfo.getRemoteAddress() +
-             "-" + bridge.getServer().getNodeID();
+             "-" + bridgeManager.getServer().getNodeID();
    }
 
    private class AMQPBridgeQueueSenderContext extends ProtonServerSenderContext {
@@ -211,36 +179,33 @@ public class AMQPBridgeToQueueSender extends AMQPBridgeSender {
       }
    }
 
-   private class AMQPBridgeQueueDeliverySender implements SenderController {
+   public static class AMQPBridgeToQueueSenderController extends AMQPBridgeToSenderController {
 
-      private final AMQPBridgeSenderInfo senderInfo;
+      private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
-      // A cached AMQP standard message writers married to the server senderContext instance on initialization
-      private AMQPMessageWriter standardMessageWriter;
-      private AMQPLargeMessageWriter largeMessageWriter;
-
-      AMQPBridgeQueueDeliverySender(AMQPBridgeSenderInfo senderInfo) {
-         this.senderInfo = senderInfo;
+      public AMQPBridgeToQueueSenderController(AMQPBridgeSenderInfo senderInfo, AMQPBridgeToPolicyManager policyManager, AMQPSessionContext session, SenderMetrics metrics) throws ActiveMQAMQPException {
+         super(senderInfo, policyManager, session, metrics);
       }
 
       @Override
-      public void close(boolean remoteClose) {
-         bridge.removeLinkClosedInterceptor(senderInfo.getId());
+      public SenderRole getRole() {
+         return SenderRole.QUEUE_SENDER;
+      }
+
+      public AMQPBridgeQueuePolicy getPolicy() {
+         return (AMQPBridgeQueuePolicy) policy;
       }
 
       @Override
-      public org.apache.activemq.artemis.core.server.Consumer init(ProtonServerSenderContext senderContext) throws Exception {
-         this.standardMessageWriter = new AMQPMessageWriter(senderContext);
-         this.largeMessageWriter = new AMQPLargeMessageWriter(senderContext);
-
+      protected ServerConsumer createServerConsumer(ProtonServerSenderContext senderContext) throws Exception {
          final AMQPSessionCallback sessionSPI = session.getSessionSPI();
          final SimpleString address = SimpleString.of(senderInfo.getLocalAddress());
          final SimpleString queue = SimpleString.of(senderInfo.getLocalQueue());
-         final RoutingType defRoutingType = senderInfo.getRoutingType();
+         final RoutingType expectedRoutingType = senderInfo.getRoutingType();
          final AMQPBridgeQueuePolicy policy = getPolicy();
 
          try {
-            final AddressQueryResult addressResult = sessionSPI.addressQuery(address, defRoutingType, false);
+            final AddressQueryResult addressResult = sessionSPI.addressQuery(address, expectedRoutingType, false);
 
             // We initiated this link so the settings should refer to an address that definitely exists
             // however there is a chance the address was removed in the interim.
@@ -248,7 +213,7 @@ public class AMQPBridgeToQueueSender extends AMQPBridgeSender {
                throw ActiveMQAMQPProtocolMessageBundle.BUNDLE.addressDoesntExist(address.toString());
             }
 
-            final QueueQueryResult queueResult = sessionSPI.queueQuery(queue, defRoutingType, false);
+            final QueueQueryResult queueResult = sessionSPI.queueQuery(queue, expectedRoutingType, false);
 
             // We initiated this link so the settings should refer to an queue that definitely exists
             // however there is a chance the address was removed in the interim.
@@ -266,19 +231,6 @@ public class AMQPBridgeToQueueSender extends AMQPBridgeSender {
             policy.getPriority() : ActiveMQDefaultConfiguration.getDefaultConsumerPriority() + policy.getPriorityAdjustment();
 
          return sessionSPI.createSender(senderContext, queue, policy.getFilter(), false, priority);
-      }
-
-      @Override
-      public MessageWriter selectOutgoingMessageWriter(ProtonServerSenderContext sender, MessageReference reference) {
-         final MessageWriter selected;
-
-         if (reference.getMessage() instanceof AMQPLargeMessage) {
-            selected = largeMessageWriter;
-         } else {
-            selected = standardMessageWriter;
-         }
-
-         return selected;
       }
    }
 }

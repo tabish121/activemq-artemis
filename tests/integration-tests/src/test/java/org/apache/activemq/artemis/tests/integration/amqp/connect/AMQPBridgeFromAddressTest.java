@@ -18,6 +18,8 @@ package org.apache.activemq.artemis.tests.integration.amqp.connect;
 
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.RECEIVER_CREDITS;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.RECEIVER_CREDITS_LOW;
+import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.RECEIVER_QUIESCE_TIMEOUT;
+import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.ADDRESS_RECEIVER_IDLE_TIMEOUT;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.BRIDGE_RECEIVER_PRIORITY;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.DISABLE_RECEIVER_DEMAND_TRACKING;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.DISABLE_RECEIVER_PRIORITY;
@@ -113,6 +115,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -161,6 +164,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          }
 
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                          .respond()
+                          .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
          peer.expectDetach().respond();
 
          // This should trigger the bridged consumer to be shutdown as the statically defined queue
@@ -291,8 +297,18 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
 
    @Test
    @Timeout(20)
-   public void testBridgeClosesAddressReceiverLinkWhenDemandRemoved() throws Exception {
-      try (ProtonTestServer peer = new ProtonTestServer()) {
+   public void testBridgeClosesAddressReceiverLinkWhenDemandRemovedNoIdleTimeout() throws Exception {
+      doTestBridgeClosesAddressReceiverLinkWhenDemandRemoved(0);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeClosesAddressReceiverLinkWhenDemandRemovedWithIdleTimeout() throws Exception {
+      doTestBridgeClosesAddressReceiverLinkWhenDemandRemoved(5);
+   }
+
+   private void doTestBridgeClosesAddressReceiverLinkWhenDemandRemoved(int idleTimeout) throws Exception {
+       try (ProtonTestServer peer = new ProtonTestServer()) {
          peer.expectSASLAnonymousConnect();
          peer.expectOpen().respond();
          peer.expectBegin().respond();
@@ -308,6 +324,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, idleTimeout);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -339,6 +356,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
             connection.start();
 
             peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
             peer.expectDetach().respond();
 
             // Demand is removed so receiver should be detached.
@@ -365,10 +385,12 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeAddressPolicyElement receiveFromAddress = new AMQPBridgeAddressPolicyElement();
          receiveFromAddress.setName("address-policy");
          receiveFromAddress.addToIncludes("test");
+         receiveFromAddress.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 100); // Should be overridden
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -408,6 +430,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
             consumer.close();
 
             peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
             peer.expectDetach().respond();
 
             session.unsubscribe("shared-subscription");
@@ -437,6 +462,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -471,6 +497,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
 
             // Will fail if any frames arrive
             peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
             peer.expectDetach().respond();
 
             consumer2.close(); // Now demand is gone
@@ -500,6 +529,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -531,6 +561,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
             connection.start();
 
             peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectFlow().withLinkCredit(1000).withDrain(true).optional();
             peer.expectDetach().respond();
 
             server.removeAddressInfo(SimpleString.of("test"), null, true);
@@ -557,6 +588,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
 
             connection.start();
 
+            peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
             peer.expectDetach().respond();
          }
 
@@ -585,6 +619,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -622,6 +657,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
             connection.start();
 
             peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
             peer.expectDetach().respond();
 
             consumer.close();
@@ -652,6 +690,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -697,6 +736,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
             consumer1.close();
 
             peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
             peer.expectDetach().respond();
 
             consumer2.close();
@@ -727,6 +769,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -766,6 +809,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
             consumer1.close(); // One is gone but another remains
 
             peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
             peer.expectDetach().respond();
 
             consumer2.close(); // Now demand is gone
@@ -870,6 +916,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -915,6 +962,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
             consumer1.close(); // One is gone but another remains
 
             peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
             peer.expectDetach().respond();
 
             consumer2.close(); // Now demand is gone from the divert
@@ -946,6 +996,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -983,6 +1034,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
             connection.start();
 
             peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
             peer.expectDetach().respond();
 
             server.destroyDivert(SimpleString.of("test-divert"));
@@ -1013,6 +1067,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -1061,6 +1116,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
             server.destroyDivert(SimpleString.of("test-divert"));
 
             peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
             peer.expectDetach().respond();
 
             consumer.close();
@@ -1090,6 +1148,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -1131,6 +1190,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
             assertEquals("test-message", ((TextMessage) message).getText());
 
             peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectFlow().withLinkCredit(999).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
             peer.expectDetach(); // demand will be gone and receiver link should close.
          }
 
@@ -1167,6 +1229,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -1210,7 +1273,10 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
             assertEquals("two", message.getStringProperty("appProperty2"));
 
             peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
-            peer.expectDetach(); // demand will be gone and receiver link should close.
+            peer.expectFlow().withLinkCredit(999).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
+            peer.expectDetach().respond(); // demand will be gone and receiver link should close.
          }
 
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
@@ -1286,6 +1352,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -1353,6 +1420,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          connection.close();
 
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                          .respond()
+                          .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
          peer.expectDetach().respond();
 
          // This should trigger the bridge consumer to be shutdown as the statically defined queue
@@ -1386,6 +1456,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -1408,7 +1479,6 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          server.addAddressInfo(new AddressInfo(SimpleString.of("target"), RoutingType.MULTICAST));
          server.deployDivert(divert);
 
-         // Create demand on the addresses so that on start federation should happen
          final ConnectionFactory factory = CFUtil.createConnectionFactory("AMQP", "tcp://localhost:" + AMQP_PORT);
          final Connection connection = factory.createConnection();
          final Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE);
@@ -1421,7 +1491,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          session.createConsumer(target);
          session.createConsumer(target);
 
-         // Add other non-federation address bindings for the policy to check on start.
+         // Add other non-bridge address bindings for the policy to check on start.
          session.createConsumer(session.createTopic("a1"));
          session.createConsumer(session.createTopic("a2"));
 
@@ -1444,7 +1514,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
                             .respond();
          peer.expectFlow().withLinkCredit(1000);
 
-         // Starting the broker connection should trigger federation of address with demand.
+         // Starting the broker connection should trigger bridging of address with demand.
          server.getBrokerConnections().forEach(c -> {
             try {
                c.start();
@@ -1458,6 +1528,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          session.createConsumer(target);
 
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                          .respond()
+                          .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
          peer.expectDetach().respond();
 
          // This removes the connection demand, but leaves behind the static queue
@@ -1473,7 +1546,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
 
    @Test
    @Timeout(20)
-   public void testBridgeStartTriggersFederationWithMultipleDivertsAndRemainsActiveAfterOneRemoved() throws Exception {
+   public void testBridgeStartTriggersBridgingWithMultipleDivertsAndRemainsActiveAfterOneRemoved() throws Exception {
       try (ProtonTestServer peer = new ProtonTestServer()) {
          peer.start();
 
@@ -1488,6 +1561,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -1520,7 +1594,6 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          server.deployDivert(divert1);
          server.deployDivert(divert2);
 
-         // Create demand on the addresses so that on start federation should happen
          final ConnectionFactory factory = CFUtil.createConnectionFactory("AMQP", "tcp://localhost:" + AMQP_PORT);
          final Connection connection = factory.createConnection();
          final Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE);
@@ -1551,7 +1624,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
                             .respond();
          peer.expectFlow().withLinkCredit(1000);
 
-         // Starting the broker connection should trigger federation of address with demand.
+         // Starting the broker connection should trigger bridging of address with demand.
          server.getBrokerConnections().forEach(c -> {
             try {
                c.start();
@@ -1570,6 +1643,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          server.destroyDivert(SimpleString.of(divert1.getName()));
 
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                          .respond()
+                          .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
          peer.expectDetach().respond();
 
          server.destroyDivert(SimpleString.of(divert2.getName()));
@@ -1604,6 +1680,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -1637,7 +1714,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
 
             peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
 
-            // Second consumer we reject the federation attempt
+            // Second consumer we reject the bridge attempt
             peer.expectAttach().ofReceiver()
                                .withTarget().withAddress("test").also()
                                .withSource().withAddress("test").also()
@@ -1651,7 +1728,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
 
             peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
 
-            // Third consumer we accept the federation attempt
+            // Third consumer we accept the bridging attempt
             peer.expectAttach().ofReceiver()
                                .withTarget().withAddress("test").also()
                                .withSource().withAddress("test").also()
@@ -1671,6 +1748,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
             consumer2.close();
 
             peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
             peer.expectDetach().respond();
 
             // Demand should be gone now
@@ -1684,7 +1764,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
 
    @Test
    @Timeout(20)
-   public void testAddressPolicyCanOverridesZeroCreditsInFederationConfigurationAndFederateAddress() throws Exception {
+   public void testAddressPolicyCanOverridesZeroCreditsInBridgeConfigurationAndFederateAddress() throws Exception {
       try (ProtonTestServer peer = new ProtonTestServer()) {
          peer.expectSASLAnonymousConnect();
          peer.expectOpen().respond();
@@ -2309,6 +2389,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
             peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
             peer.expectDetach();
             peer.remoteDetach().withErrorCondition(condition.toString(), "Forced Detach").now();
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
 
             // Retry after another consumer added.
             peer.expectAttach().ofReceiver()
@@ -2713,6 +2794,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element1 = new AMQPBridgeBrokerConnectionElement();
          element1.setName(getTestName());
          element1.addBridgeFromAddressPolicy(receiveFromAddress1);
+         element1.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          // Bridge element two
          final AMQPBridgeAddressPolicyElement receiveFromAddress2 = new AMQPBridgeAddressPolicyElement();
@@ -2721,6 +2803,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element2 = new AMQPBridgeBrokerConnectionElement();
          element2.setName(getTestName());
          element2.addBridgeFromAddressPolicy(receiveFromAddress2);
+         element2.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -2774,6 +2857,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          Wait.assertTrue(() -> server.queueQuery(SimpleString.of("testB")).isExists());
 
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                          .respond()
+                          .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
          peer.expectDetach().respond();
 
          // This should trigger the bridged consumer to be shutdown as the statically defined queue
@@ -2783,6 +2869,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          Wait.assertFalse(() -> server.queueQuery(SimpleString.of("testA")).isExists());
 
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                          .respond()
+                          .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
          peer.expectDetach().respond();
 
          // This should trigger the bridged consumer to be shutdown as the statically defined queue
@@ -2818,6 +2907,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress1);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -2837,6 +2927,9 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
                                             containsString(server.getNodeID().toString())))
                            .respond();
          peer.expectFlow().withLinkCredit(1000);
+         peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                          .respond()
+                          .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
          peer.expectDetach().respond().afterDelay(40); // Defer the detach response for a bit
 
          server.addAddressInfo(new AddressInfo(SimpleString.of(getTestName()), RoutingType.MULTICAST));
@@ -2844,7 +2937,7 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          final ConnectionFactory factory = CFUtil.createConnectionFactory("AMQP", "tcp://localhost:" + AMQP_PORT);
 
          // Create demand on the address which creates a bridge consumer then let it close which
-         // should shut down that federation consumer.
+         // should shut down that bridge consumer.
          try (Connection connection = factory.createConnection()) {
             final Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE);
             final MessageConsumer consumer = session.createConsumer(session.createTopic(getTestName()));
@@ -2864,9 +2957,12 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
                                             containsString(server.getNodeID().toString())))
                            .respond();
          peer.expectFlow().withLinkCredit(1000);
+         peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                          .respond()
+                          .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
          peer.expectDetach().respond();
 
-         // Create demand on the address which creates a federation consumer again quickly which
+         // Create demand on the address which creates a bridge consumer again quickly which
          // can trigger a new consumer before the previous one was fully closed with a Detach
          // response and get stuck because it will steal the link in proton and not be treated
          // as a new attach for this consumer.
@@ -2882,6 +2978,392 @@ class AMQPBridgeFromAddressTest extends AmqpClientTestSupport {
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
          peer.expectClose();
          peer.remoteClose().now();
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.close();
+      }
+   }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeLinksDetachesAfterLinkQuiesceTimeoutNoIldeTimeout() throws Exception {
+      doTestBridgeLinksDetachesAfterLinkQuiesceTimeout(0);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeLinksDetachesAfterLinkQuiesceTimeoutAndIdleTimeout() throws Exception {
+      doTestBridgeLinksDetachesAfterLinkQuiesceTimeout(10);
+   }
+
+   public void doTestBridgeLinksDetachesAfterLinkQuiesceTimeout(int idleTimeout) throws Exception {
+      try (ProtonTestServer peer = new ProtonTestServer()) {
+         peer.expectSASLAnonymousConnect();
+         peer.expectOpen().respond();
+         peer.expectBegin().respond();
+         peer.start();
+
+         final URI remoteURI = peer.getServerURI();
+         logger.info("Connect test started, peer listening on: {}", remoteURI);
+
+         final AMQPBridgeAddressPolicyElement receiveFromAddress = new AMQPBridgeAddressPolicyElement();
+         receiveFromAddress.setName("address-policy");
+         receiveFromAddress.addToIncludes(getTestName());
+         receiveFromAddress.addProperty(RECEIVER_QUIESCE_TIMEOUT, 20);
+         receiveFromAddress.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, idleTimeout);
+
+         final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
+         element.setName(getTestName());
+         element.addBridgeFromAddressPolicy(receiveFromAddress);
+
+         final AMQPBrokerConnectConfiguration amqpConnection =
+            new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
+         amqpConnection.setReconnectAttempts(0);// No reconnects
+         amqpConnection.addElement(element);
+
+         server.getConfiguration().addAMQPConnection(amqpConnection);
+         server.start();
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectAttach().ofReceiver()
+                            .withTarget().withAddress(getTestName()).also()
+                            .withSource().withAddress(getTestName()).also()
+                            .withName(allOf(containsString(getTestName()),
+                                            containsString("address-receiver"),
+                                            containsString("amqp-bridge"),
+                                            containsString(server.getNodeID().toString())))
+                           .respond();
+         peer.expectFlow().withLinkCredit(1000);
+
+         final ConnectionFactory factory = CFUtil.createConnectionFactory("AMQP", "tcp://localhost:" + AMQP_PORT);
+
+         try (Connection connection = factory.createConnection()) {
+            final Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE);
+            session.createConsumer(session.createTopic(getTestName()));
+
+            connection.start();
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectFlow().withLinkCredit(1000).withDrain(true);  // Don't answer drained then wait for the
+            peer.expectDetach().respond();                           // timeout to see the link is detached.
+         }
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectAttach().ofReceiver()
+                            .withTarget().withAddress(getTestName()).also()
+                            .withSource().withAddress(getTestName()).also()
+                            .withName(allOf(containsString(getTestName()),
+                                            containsString("address-receiver"),
+                                            containsString("amqp-bridge"),
+                                            containsString(server.getNodeID().toString())))
+                           .respond();
+         peer.expectFlow().withLinkCredit(1000);
+
+         // New demand should create a new consumer after the last drain timed out and closed the link
+         try (Connection connection = factory.createConnection()) {
+            final Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE);
+            session.createConsumer(session.createTopic(getTestName()));
+
+            connection.start();
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(2000).withDrain(true);
+            peer.expectDetach().respond();
+         }
+
+         peer.expectFlow().withLinkCredit(1000);
+         peer.close();
+      }
+   }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeLinksRecoveredAfterLinkQuiesceTimeoutWithRenewedDemand() throws Exception {
+      try (ProtonTestServer peer = new ProtonTestServer()) {
+         peer.expectSASLAnonymousConnect();
+         peer.expectOpen().respond();
+         peer.expectBegin().respond();
+         peer.start();
+
+         final URI remoteURI = peer.getServerURI();
+         logger.info("Connect test started, peer listening on: {}", remoteURI);
+
+         final AMQPBridgeAddressPolicyElement receiveFromAddress = new AMQPBridgeAddressPolicyElement();
+         receiveFromAddress.setName("address-policy");
+         receiveFromAddress.addToIncludes(getTestName());
+         receiveFromAddress.addProperty(RECEIVER_QUIESCE_TIMEOUT, 300);
+         receiveFromAddress.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 10);
+
+         final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
+         element.setName(getTestName());
+         element.addBridgeFromAddressPolicy(receiveFromAddress);
+
+         final AMQPBrokerConnectConfiguration amqpConnection =
+            new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
+         amqpConnection.setReconnectAttempts(0);// No reconnects
+         amqpConnection.addElement(element);
+
+         server.getConfiguration().addAMQPConnection(amqpConnection);
+         server.start();
+         server.addAddressInfo(new AddressInfo(SimpleString.of(getTestName()), RoutingType.MULTICAST));
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectAttach().ofReceiver()
+                            .withTarget().withAddress(getTestName()).also()
+                            .withSource().withAddress(getTestName()).also()
+                            .withName(allOf(containsString(getTestName()),
+                                            containsString("address-receiver"),
+                                            containsString("amqp-bridge"),
+                                            containsString(server.getNodeID().toString())))
+                           .respond();
+         peer.expectFlow().withLinkCredit(1000);
+
+         final ConnectionFactory factory = CFUtil.createConnectionFactory("AMQP", "tcp://localhost:" + AMQP_PORT);
+
+         try (Connection connection = factory.createConnection()) {
+            final Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE);
+            final MessageConsumer consumer = session.createConsumer(session.createTopic(getTestName()));
+
+            connection.start();
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            // Demand is removed so expect a drain, don't respond then add new consumer to add
+            // demand that must wait on drain to timeout and recover.
+            peer.expectFlow().withLinkCredit(1000).withDrain(true);
+
+            consumer.close();
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectAttach().ofReceiver()
+                               .withTarget().withAddress(getTestName()).also()
+                               .withSource().withAddress(getTestName()).also()
+                               .withName(allOf(containsString(getTestName()),
+                                               containsString("address-receiver"),
+                                               containsString("amqp-bridge"),
+                                               containsString(server.getNodeID().toString())))
+                              .respond();
+            peer.expectDetach().respond();
+            peer.expectFlow().withLinkCredit(1000);
+
+            session.createConsumer(session.createTopic(getTestName()));
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+
+            // Demand goes away and the bridge link is closed.
+            peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(2000).withDrain(true);
+            peer.expectDetach().respond();
+         }
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.close();
+      }
+   }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeLinksRecoveredAfterLinkQuiescedButNotIdledOut() throws Exception {
+      try (ProtonTestServer peer = new ProtonTestServer()) {
+         peer.expectSASLAnonymousConnect();
+         peer.expectOpen().respond();
+         peer.expectBegin().respond();
+         peer.start();
+
+         final URI remoteURI = peer.getServerURI();
+         logger.info("Connect test started, peer listening on: {}", remoteURI);
+
+         final AMQPBridgeAddressPolicyElement receiveFromAddress = new AMQPBridgeAddressPolicyElement();
+         receiveFromAddress.setName("address-policy");
+         receiveFromAddress.addToIncludes(getTestName());
+         receiveFromAddress.addProperty(RECEIVER_QUIESCE_TIMEOUT, 10_000);
+         receiveFromAddress.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 10_000);
+
+         final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
+         element.setName(getTestName());
+         element.addBridgeFromAddressPolicy(receiveFromAddress);
+
+         final AMQPBrokerConnectConfiguration amqpConnection =
+            new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
+         amqpConnection.setReconnectAttempts(0);// No reconnects
+         amqpConnection.addElement(element);
+
+         server.getConfiguration().addAMQPConnection(amqpConnection);
+         server.start();
+         server.addAddressInfo(new AddressInfo(SimpleString.of(getTestName()), RoutingType.MULTICAST));
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectAttach().ofReceiver()
+                            .withTarget().withAddress(getTestName()).also()
+                            .withSource().withAddress(getTestName()).also()
+                            .withName(allOf(containsString(getTestName()),
+                                            containsString("address-receiver"),
+                                            containsString("amqp-bridge"),
+                                            containsString(server.getNodeID().toString())))
+                           .respond();
+         peer.expectFlow().withLinkCredit(1000);
+
+         final ConnectionFactory factory = CFUtil.createConnectionFactory("AMQP", "tcp://localhost:" + AMQP_PORT);
+
+         try (Connection connection = factory.createConnection()) {
+            final Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE);
+            final MessageConsumer consumer = session.createConsumer(session.createTopic(getTestName()));
+
+            connection.start();
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            // Demand is removed so expect a drain, respond to drain to quiesce the link
+            // which should leave it idling and ready for recovery by next consumer.
+            peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
+
+            consumer.close();
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            // Link should be restarted by receiving a new batch of credit
+            peer.expectFlow().withLinkCredit(1000);
+
+            session.createConsumer(session.createTopic(getTestName()));
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         }
+
+         peer.close();
+      }
+   }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeLinkIdleTimeoutAtPolicyLevelOverridesTopLevelConfiguration() throws Exception {
+      try (ProtonTestServer peer = new ProtonTestServer()) {
+         peer.expectSASLAnonymousConnect();
+         peer.expectOpen().respond();
+         peer.expectBegin().respond();
+         peer.start();
+
+         final URI remoteURI = peer.getServerURI();
+         logger.info("Connect test started, peer listening on: {}", remoteURI);
+
+         final AMQPBridgeAddressPolicyElement receiveFromAddress = new AMQPBridgeAddressPolicyElement();
+         receiveFromAddress.setName("address-policy");
+         receiveFromAddress.addToIncludes(getTestName());
+         receiveFromAddress.addProperty(RECEIVER_QUIESCE_TIMEOUT, 10_000);
+         receiveFromAddress.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 250);
+
+         final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
+         element.setName(getTestName());
+         element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 90_000);
+
+         final AMQPBrokerConnectConfiguration amqpConnection =
+            new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
+         amqpConnection.setReconnectAttempts(0);// No reconnects
+         amqpConnection.addElement(element);
+
+         server.getConfiguration().addAMQPConnection(amqpConnection);
+         server.start();
+         server.addAddressInfo(new AddressInfo(SimpleString.of(getTestName()), RoutingType.MULTICAST));
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectAttach().ofReceiver()
+                            .withTarget().withAddress(getTestName()).also()
+                            .withSource().withAddress(getTestName()).also()
+                            .withName(allOf(containsString(getTestName()),
+                                            containsString("address-receiver"),
+                                            containsString("amqp-bridge"),
+                                            containsString(server.getNodeID().toString())))
+                           .respond();
+         peer.expectFlow().withLinkCredit(1000);
+
+         final ConnectionFactory factory = CFUtil.createConnectionFactory("AMQP", "tcp://localhost:" + AMQP_PORT);
+
+         try (Connection connection = factory.createConnection()) {
+            final Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE);
+            final MessageConsumer consumer = session.createConsumer(session.createTopic(getTestName()));
+
+            connection.start();
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            // Demand is removed so expect a drain, respond to drain to quiesce the link
+            // which should leave it idling and ready for recovery by next consumer.
+            peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
+
+            consumer.close();
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectDetach().respond();
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         }
+
+         peer.close();
+      }
+   }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeResourceDeletedBeforeLinkQuiesceCompletes() throws Exception {
+      try (ProtonTestServer peer = new ProtonTestServer()) {
+         peer.expectSASLAnonymousConnect();
+         peer.expectOpen().respond();
+         peer.expectBegin().respond();
+         peer.start();
+
+         final URI remoteURI = peer.getServerURI();
+         logger.info("Connect test started, peer listening on: {}", remoteURI);
+
+         final AMQPBridgeAddressPolicyElement receiveFromAddress = new AMQPBridgeAddressPolicyElement();
+         receiveFromAddress.setName("address-policy");
+         receiveFromAddress.addToIncludes(getTestName());
+
+         final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
+         element.setName(getTestName());
+         element.addBridgeFromAddressPolicy(receiveFromAddress);
+
+         final AMQPBrokerConnectConfiguration amqpConnection =
+            new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
+         amqpConnection.setReconnectAttempts(0);// No reconnects
+         amqpConnection.addElement(element);
+
+         server.getConfiguration().addAMQPConnection(amqpConnection);
+         server.start();
+         server.addAddressInfo(new AddressInfo(SimpleString.of(getTestName()), RoutingType.MULTICAST));
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectAttach().ofReceiver()
+                            .withTarget().withAddress(getTestName()).also()
+                            .withSource().withAddress(getTestName()).also()
+                            .withName(allOf(containsString(getTestName()),
+                                            containsString("address-receiver"),
+                                            containsString("amqp-bridge"),
+                                            containsString(server.getNodeID().toString())))
+                           .respond();
+         peer.expectFlow().withLinkCredit(1000);
+
+         final ConnectionFactory factory = CFUtil.createConnectionFactory("AMQP", "tcp://localhost:" + AMQP_PORT);
+
+         try (Connection connection = factory.createConnection()) {
+            final Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE);
+            session.createConsumer(session.createTopic(getTestName()));
+
+            connection.start();
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectFlow().withLinkCredit(1000).withDrain(true); // No answer to allow for race of answer plus delete
+         }
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectDetach().respond();
+
+         // Now answer the drain request and then immediately remove the resource.
+         peer.remoteFlow().withLinkCredit(0).withDeliveryCount(1000).withDrain(true).now();
+
+         server.removeAddressInfo(SimpleString.of(getTestName()), null);
+
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
          peer.close();
       }

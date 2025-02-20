@@ -834,12 +834,6 @@ class AMQPBridgeToQueueTest  extends AmqpClientTestSupport {
                                                          .setAutoCreated(false));
 
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
-
-         // Add the alternate queue again which should trigger new attempt
-         server.createQueue(QueueConfiguration.of("another").setRoutingType(RoutingType.ANYCAST)
-                                                            .setAddress("another")
-                                                            .setAutoCreated(false));
-
          peer.expectAttach().ofSender()
                             .withTarget().withAddress("another").also()
                             .withSource().withAddress("another::another").also()
@@ -850,12 +844,15 @@ class AMQPBridgeToQueueTest  extends AmqpClientTestSupport {
                                             containsString(server.getNodeID().toString())))
                             .respond();
 
-         // Remove and add the queue again which should trigger new attempt
-         server.destroyQueue(SimpleString.of("test"), null, true);
-         server.createQueue(QueueConfiguration.of("test").setRoutingType(RoutingType.ANYCAST)
-                                                         .setAddress("test")
-                                                         .setAutoCreated(false));
+         // Add the alternate queue again which should trigger new attempt
+         server.createQueue(QueueConfiguration.of("another").setRoutingType(RoutingType.ANYCAST)
+                                                            .setAddress("another")
+                                                            .setAutoCreated(false));
 
+         // Remove and later add the queue again which should trigger new attempt
+         server.destroyQueue(SimpleString.of("test"), null, true);
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
          peer.expectAttach().ofSender()
                             .withTarget().withAddress("test").also()
                             .withSource().withAddress("test::test").also()
@@ -865,6 +862,12 @@ class AMQPBridgeToQueueTest  extends AmqpClientTestSupport {
                                             containsString("amqp-bridge"),
                                             containsString(server.getNodeID().toString())))
                             .respond();
+
+         server.createQueue(QueueConfiguration.of("test").setRoutingType(RoutingType.ANYCAST)
+                                                         .setAddress("test")
+                                                         .setAutoCreated(false));
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
 
          Wait.assertTrue(() -> server.addressQuery(SimpleString.of("test")).isExists());
          Wait.assertTrue(() -> server.bindingQuery(SimpleString.of("test")).getQueueNames().size() > 0);

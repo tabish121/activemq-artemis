@@ -400,7 +400,7 @@ public class AMQPConnectionContext extends ProtonInitializable implements EventH
          return;
       }
 
-      if (link.getLocalState() ==  EndpointState.ACTIVE) { // if already active it's probably from the AMQP bridge and hence we just ignore it
+      if (link.getLocalState() ==  EndpointState.ACTIVE) { // if already active it's probably from the AMQP bridgeManager and hence we just ignore it
          return;
       }
 

@@ -42,17 +42,17 @@ public class AMQPBridgeManagers {
    }
 
    /**
-    * Stops all bridge managers ignoring any thrown exceptions and clears state
+    * Shutdown all bridge managers ignoring any thrown exceptions and clears state
     * from all previously registered manager, new managers can be added after a
     * reset.
     */
-   public void reset() {
-      if (bridgeManagers != null && !bridgeManagers.isEmpty()) {
+   public synchronized void shutdown() {
+      if (!bridgeManagers.isEmpty()) {
          bridgeManagers.forEach(bridgeManager -> {
             try {
-               bridgeManager.stop();
+               bridgeManager.shutdown();
             } catch (Exception e) {
-               logger.trace("Ignoring ecxeption thrown during bridge manager stop: ", e);
+               logger.trace("Ignoring exception thrown during bridge manager shutdown: ", e);
             }
          });
       }
@@ -61,18 +61,54 @@ public class AMQPBridgeManagers {
    }
 
    /**
+    * Starts each bridge manager registered in the managers collection.
+    *
+    * @throws Exception if an error occurs while starting any bridge manager.
+    */
+   public synchronized void start() throws Exception {
+      if (!bridgeManagers.isEmpty()) {
+         for (AMQPBridgeManager manager : bridgeManagers) {
+            try {
+               manager.start();
+            } catch (Exception e) {
+               logger.debug("Exception thrown during bridge manager start: ", e);
+               throw e;
+            }
+         }
+      }
+   }
+
+   /**
+    * Stops each bridge manager registered in the managers collection.
+    *
+    * @throws Exception if an error occurs while stopping any bridge manager.
+    */
+   public synchronized void stop() throws Exception {
+      if (!bridgeManagers.isEmpty()) {
+         for (AMQPBridgeManager manager : bridgeManagers) {
+            try {
+               manager.stop();
+            } catch (Exception e) {
+               logger.debug("Exception thrown during bridge manager stop: ", e);
+               throw e;
+            }
+         }
+      }
+   }
+
+   /**
     * Adds a new bridge to the collection of managed bridges and starts the new {@link AMQPBridgeManager}
     *
     * @param configuration
     *    The configuration to use when creating a new bridge manager.
     */
-   public void addBridgeManager(AMQPBridgeBrokerConnectionElement configuration) throws ActiveMQException {
+   public synchronized void addBridgeManager(AMQPBridgeBrokerConnectionElement configuration) throws ActiveMQException {
       final AMQPBridgeManager bridgeManager = AMQPBridgeSupport.createManager(brokerConnection, configuration);
 
       try {
-         bridgeManager.start();
+         bridgeManager.initialize();
       } catch (ActiveMQException e) {
-         logger.debug("Error caught and rethrown while starting configured bridge connection:", e);
+         logger.debug("Error caught and re-thrown while initializing configured bridge connection:", e);
          throw e;
       }
 
@@ -87,11 +123,11 @@ public class AMQPBridgeManagers {
     *
     * @throws ActiveMQException if an error occurs during connection restoration.
     */
-   public void handleConnectionRestored(AMQPSessionContext session) throws ActiveMQException {
+   public synchronized void connectionRestored(AMQPSessionContext session) throws ActiveMQException {
       if (bridgeManagers != null && !bridgeManagers.isEmpty()) {
          for (AMQPBridgeManager bridgeManager : bridgeManagers) {
             try {
-               bridgeManager.handleConnectionRestored(session.getAMQPConnectionContext(), session);
+               bridgeManager.connectionRestored(session.getAMQPConnectionContext(), session);
             } catch (ActiveMQException e) {
                logger.trace("AMQP Bridge connection {} threw an error on handling of connection restored: ", bridgeManager.getName(), e);
                throw e;
@@ -103,14 +139,14 @@ public class AMQPBridgeManagers {
    /**
     * Signals all bridges that the current connection has dropped, exceptions are ignored.
     */
-   public void handleConnectionDropped() {
+   public synchronized void connectionInterrupted() {
       if (bridgeManagers != null || !bridgeManagers.isEmpty()) {
          for (AMQPBridgeManager bridgeManager : bridgeManagers) {
             if (bridgeManager != null) {
                try {
-                  bridgeManager.handleConnectionDropped();
+                  bridgeManager.connectionInterrupted();
                } catch (ActiveMQException e) {
-                  logger.trace("AMQP Bridge connection {} threw an error on handling of connection drop", bridgeManager.getName());
+                  logger.trace("AMQP Bridge connection {} threw an error on handling of connection interrupted", bridgeManager.getName());
                }
             }
          }

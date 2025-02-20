@@ -16,6 +16,8 @@
  */
 package org.apache.activemq.artemis.tests.integration.amqp.connect;
 
+import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.PULL_RECEIVER_BATCH_SIZE;
+import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.RECEIVER_CREDITS;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -47,7 +49,9 @@ import org.apache.activemq.artemis.core.server.impl.AddressInfo;
 import org.apache.activemq.artemis.tests.integration.amqp.AmqpClientTestSupport;
 import org.apache.activemq.artemis.tests.util.CFUtil;
 import org.apache.activemq.artemis.utils.Wait;
+import org.apache.qpid.jms.JmsConnectionFactory;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.slf4j.Logger;
@@ -573,6 +577,121 @@ class AMQPBridgeServerToServerTest extends AmqpClientTestSupport {
          assertEquals("Hello World 1", ((TextMessage) receivedR).getText());
          assertTrue(receivedR.propertyExists("color"));
          assertEquals("green", receivedR.getStringProperty("color"));
+      }
+   }
+
+   @RepeatedTest(1)
+   @Timeout(20)
+   public void testTwoPullConsumerOnPullingBridgeConfigurationEachCanTakeOneMessageProduceOnLocal() throws Exception {
+      doTestTwoPullConsumerOnPullingBridgeConfigurationEachCanTakeOneMessage(true);
+   }
+
+   @RepeatedTest(1)
+   @Timeout(20)
+   public void testTwoPullConsumerOnPullingBridgeConfigurationEachCanTakeOneMessageProduceOnRemote() throws Exception {
+      doTestTwoPullConsumerOnPullingBridgeConfigurationEachCanTakeOneMessage(false);
+   }
+
+   public void doTestTwoPullConsumerOnPullingBridgeConfigurationEachCanTakeOneMessage(boolean produceLocal) throws Exception {
+      logger.info("Test started: {}", getTestName());
+
+      final AMQPBridgeQueuePolicyElement bridgeQueuePolicy = new AMQPBridgeQueuePolicyElement();
+      bridgeQueuePolicy.setName("bridge-queue-policy");
+      bridgeQueuePolicy.addToIncludes(getTestName(), getTestName());
+      bridgeQueuePolicy.addProperty(RECEIVER_CREDITS, 0);         // Enable Pull mode
+      bridgeQueuePolicy.addProperty(PULL_RECEIVER_BATCH_SIZE, 1); // Pull mode batch is one
+
+      final AMQPBridgeBrokerConnectionElement element1 = new AMQPBridgeBrokerConnectionElement();
+      element1.setName("Bridge-Messages-From-Remote");
+      element1.addBridgeFromQueuePolicy(bridgeQueuePolicy);
+
+      final AMQPBridgeBrokerConnectionElement element2 = new AMQPBridgeBrokerConnectionElement();
+      element2.setName("Bridge-Messages-From-Local");
+      element2.addBridgeFromQueuePolicy(bridgeQueuePolicy);
+
+      final AMQPBrokerConnectConfiguration amqpConnection1 =
+         new AMQPBrokerConnectConfiguration(getTestName(), "tcp://localhost:" + SERVER_PORT_REMOTE);
+      amqpConnection1.setReconnectAttempts(10);// Limit reconnects
+      amqpConnection1.addElement(element1);
+
+      final AMQPBrokerConnectConfiguration amqpConnection2 =
+         new AMQPBrokerConnectConfiguration(getTestName(), "tcp://localhost:" + SERVER_PORT);
+      amqpConnection2.setReconnectAttempts(10);// Limit reconnects
+      amqpConnection2.addElement(element2);
+
+      server.getConfiguration().addAMQPConnection(amqpConnection1);
+      remoteServer.getConfiguration().addAMQPConnection(amqpConnection2);
+
+      remoteServer.start();
+      remoteServer.createQueue(QueueConfiguration.of(getTestName()).setRoutingType(RoutingType.ANYCAST)
+                                                                   .setAddress(getTestName())
+                                                                   .setAutoCreated(false));
+      server.start();
+      server.createQueue(QueueConfiguration.of(getTestName()).setRoutingType(RoutingType.ANYCAST)
+                                                             .setAddress(getTestName())
+                                                             .setAutoCreated(false));
+
+      final int MESSAGE_COUNT = 2;
+      final JmsConnectionFactory factory;
+      if (produceLocal) {
+         factory = new JmsConnectionFactory("amqp://localhost:" + SERVER_PORT);
+      } else {
+         factory = new JmsConnectionFactory("amqp://localhost:" + SERVER_PORT_REMOTE);
+      }
+
+      try (Connection connection = factory.createConnection();
+           Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE)) {
+
+         final Queue queue = session.createQueue(getTestName());
+         final MessageProducer producer = session.createProducer(queue);
+
+         for (int i = 0; i < MESSAGE_COUNT; ++i) {
+            TextMessage message = session.createTextMessage("test-message:" + i);
+
+            message.setIntProperty("messageNo", i);
+
+            producer.send(message);
+         }
+      }
+
+      final JmsConnectionFactory factoryLocal = new JmsConnectionFactory(
+         "amqp://localhost:" + SERVER_PORT + "?jms.prefetchPolicy.all=0");
+      final JmsConnectionFactory factoryRemote = new JmsConnectionFactory(
+         "amqp://localhost:" + SERVER_PORT_REMOTE + "?jms.prefetchPolicy.all=0");
+
+      try (Connection connectionL = factoryLocal.createConnection();
+           Connection connectionR = factoryRemote.createConnection();
+           Session sessionL = connectionL.createSession(Session.AUTO_ACKNOWLEDGE);
+           Session sessionR = connectionR.createSession(Session.AUTO_ACKNOWLEDGE)) {
+
+         // TODO: Cleanup debugging code
+
+         connectionL.start();
+         connectionR.start();
+
+         Wait.assertTrue(() -> server.queueQuery(SimpleString.of(getTestName())).isExists(), 10_000);
+         Wait.assertTrue(() -> remoteServer.queueQuery(SimpleString.of(getTestName())).isExists(), 10_000);
+
+         final Queue queue = sessionL.createQueue(getTestName());
+         final MessageConsumer consumerL = sessionL.createConsumer(queue);
+         final MessageConsumer consumerR = sessionR.createConsumer(queue);
+
+         System.out.println("Consumers created on both brokers.");
+         System.out.println();
+
+         Thread.sleep(5000);
+
+         System.out.println("Consumer on local queue: " + server.queueQuery(SimpleString.of(getTestName())).getConsumerCount());
+         System.out.println("Consumer on remote queue: " + remoteServer.queueQuery(SimpleString.of(getTestName())).getConsumerCount());
+
+         final TextMessage messageL = (TextMessage) consumerL.receive(2_000); // Read from local
+         final TextMessage messageR = (TextMessage) consumerR.receive(2_000); // Read from remote after federated
+
+         assertNotNull(messageL);
+         assertNotNull(messageR);
+
+         System.out.println();
+         System.out.println("Consumed message from both brokers.");
       }
    }
 }
