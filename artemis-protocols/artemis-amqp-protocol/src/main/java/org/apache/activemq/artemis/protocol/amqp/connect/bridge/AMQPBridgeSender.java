@@ -22,8 +22,11 @@ import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.NOT_F
 import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.RESOURCE_DELETED;
 
 import java.io.Closeable;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 
+import org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeMetrics.SenderMetrics;
+import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPException;
 import org.apache.activemq.artemis.protocol.amqp.proton.AMQPConnectionContext;
 import org.apache.activemq.artemis.protocol.amqp.proton.AMQPSessionContext;
 import org.apache.activemq.artemis.protocol.amqp.proton.ProtonServerSenderContext;
@@ -37,45 +40,61 @@ import org.apache.qpid.proton.engine.Sender;
  */
 public abstract class AMQPBridgeSender implements Closeable {
 
-   protected final AMQPBridgeManager bridge;
+   protected final AMQPBridgeManager bridgeManager;
+   protected final AMQPBridgeToPolicyManager policyManager;
    protected final AMQPBridgeSenderConfiguration configuration;
    protected final AMQPBridgeSenderInfo senderInfo;
    protected final AMQPBridgePolicy policy;
    protected final AMQPConnectionContext connection;
    protected final AMQPSessionContext session;
+   protected final SenderMetrics metrics;
+   protected final AtomicBoolean closed = new AtomicBoolean();
 
    protected ProtonServerSenderContext senderContext;
    protected Sender protonSender;
-   protected boolean started;
-   protected boolean closed;
+   protected volatile boolean initialized;
    protected Consumer<AMQPBridgeSender> remoteOpenHandler;
    protected Consumer<AMQPBridgeSender> remoteCloseHandler;
 
-   public AMQPBridgeSender(AMQPBridgeManager bridge,
+   public AMQPBridgeSender(AMQPBridgeToPolicyManager policyManager,
                            AMQPBridgeSenderConfiguration configuration,
                            AMQPSessionContext session,
                            AMQPBridgeSenderInfo senderInfo,
-                           AMQPBridgePolicy policy) {
-      this.bridge = bridge;
+                           SenderMetrics metrics) {
+      this.policyManager = policyManager;
+      this.bridgeManager = policyManager.getBridgeManager();
       this.senderInfo = senderInfo;
-      this.policy = policy;
+      this.policy = policyManager.getPolicy();
       this.connection = session.getAMQPConnectionContext();
       this.session = session;
       this.configuration = configuration;
+      this.metrics = metrics;
+   }
+
+   public boolean isClosed() {
+      return closed.get();
    }
 
    /**
-    * Starts the sender instance which includes creating the remote resources and
-    * performing any internal initialization needed to fully establish the sender
-    * instance. This call should not block and any errors encountered on creation of
-    * the backing sender resources should utilize the error handling mechanisms of
-    * this AMQP bridge sender.
+    * @return <code>true</code> if the receiver has previously been initialized.
     */
-   public final synchronized void start() {
-      if (!started && !closed) {
-         started = true;
-         asyncCreateSender();
+   public final boolean isInitialized() {
+      return initialized;
+   }
+
+   /**
+    * Called to initialize the AMQP bridge receiver which will trigger an asynchronous
+    * task to attach the link and handle all setup receiver and eventually start the flow
+    * of credit to the remote. This method should be called once after the basic configuration
+    * of the receiver is complete and should not be called again after that.
+    */
+   public void initialize() {
+      if (initialized) {
+         throw new IllegalStateException("A receiver should only be initialized once");
       }
+
+      initialized = true;
+      connection.runLater(this::doCreateSender);
    }
 
    /**
@@ -84,12 +103,28 @@ public abstract class AMQPBridgeSender implements Closeable {
     */
    @Override
    public final synchronized void close() {
-      if (!closed) {
-         closed = true;
-         if (started) {
-            started = false;
-            asyncCloseSender();
+      if (closed.compareAndSet(false, true)) {
+         if (senderContext != null) {
+            try {
+               senderContext.close(null);
+            } catch (ActiveMQAMQPException e) {
+            } finally {
+               senderContext = null;
+            }
          }
+
+         // Need to track the proton senderContext and close it here as the default
+         // context implementation doesn't do that and could result in no detach
+         // being sent in some cases and possible resources leaks.
+         if (protonSender != null) {
+            try {
+               protonSender.close();
+            } finally {
+               protonSender = null;
+            }
+         }
+
+         connection.flush();
       }
    }
 
@@ -103,8 +138,15 @@ public abstract class AMQPBridgeSender implements Closeable {
    /**
     * @return the {@link AMQPBridgeManager} that this sender operates under.
     */
-   public final AMQPBridgeManager getBridge() {
-      return bridge;
+   public final AMQPBridgeManager getBridgeManager() {
+      return bridgeManager;
+   }
+
+   /**
+    * @return the {@link AMQPBridgeToPolicyManager} that this sender operates under.
+    */
+   public AMQPBridgeToPolicyManager getPolicyManager() {
+      return policyManager;
    }
 
    /**
@@ -125,8 +167,8 @@ public abstract class AMQPBridgeSender implements Closeable {
     * @return this sender instance.
     */
    public final AMQPBridgeSender setRemoteOpenHandler(Consumer<AMQPBridgeSender> handler) {
-      if (started) {
-         throw new IllegalStateException("Cannot set a remote open handler after the senderContext is started");
+      if (initialized) {
+         throw new IllegalStateException("Cannot set a remote open handler after the senderContext is initialized");
       }
 
       this.remoteCloseHandler = handler;
@@ -143,8 +185,8 @@ public abstract class AMQPBridgeSender implements Closeable {
     * @return this sender instance.
     */
    public final AMQPBridgeSender setRemoteClosedHandler(Consumer<AMQPBridgeSender> handler) {
-      if (started) {
-         throw new IllegalStateException("Cannot set a remote close handler after the senderContext is started");
+      if (initialized) {
+         throw new IllegalStateException("Cannot set a remote close handler after the senderContext is initialized");
       }
 
       this.remoteCloseHandler = handler;
@@ -154,12 +196,7 @@ public abstract class AMQPBridgeSender implements Closeable {
    /**
     * Handles the create of the actual AMQP sender link on the connection thread.
     */
-   protected abstract void asyncCreateSender();
-
-   /**
-    * Handles the close of the actual AMQP sender link on the connection thread.
-    */
-   protected abstract void asyncCloseSender();
+   protected abstract void doCreateSender();
 
    protected final Symbol[] getRemoteTerminusCapabilities() {
       if (policy.getRemoteTerminusCapabilities() != null && !policy.getRemoteTerminusCapabilities().isEmpty()) {

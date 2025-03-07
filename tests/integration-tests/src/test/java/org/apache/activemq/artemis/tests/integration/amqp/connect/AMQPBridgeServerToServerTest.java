@@ -16,15 +16,22 @@
  */
 package org.apache.activemq.artemis.tests.integration.amqp.connect;
 
+import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.PULL_RECEIVER_BATCH_SIZE;
+import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.RECEIVER_CREDITS;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.lang.invoke.MethodHandles;
+import java.util.Arrays;
 import java.util.Map;
 
+import javax.jms.BytesMessage;
 import javax.jms.Connection;
 import javax.jms.ConnectionFactory;
+import javax.jms.DeliveryMode;
 import javax.jms.Message;
 import javax.jms.MessageConsumer;
 import javax.jms.MessageProducer;
@@ -44,10 +51,13 @@ import org.apache.activemq.artemis.core.config.amqpBrokerConnectivity.AMQPBroker
 import org.apache.activemq.artemis.core.server.ActiveMQServer;
 import org.apache.activemq.artemis.core.server.ComponentConfigurationRoutingType;
 import org.apache.activemq.artemis.core.server.impl.AddressInfo;
+import org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport;
 import org.apache.activemq.artemis.tests.integration.amqp.AmqpClientTestSupport;
 import org.apache.activemq.artemis.tests.util.CFUtil;
 import org.apache.activemq.artemis.utils.Wait;
+import org.apache.qpid.jms.JmsConnectionFactory;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 import org.slf4j.Logger;
@@ -573,6 +583,330 @@ class AMQPBridgeServerToServerTest extends AmqpClientTestSupport {
          assertEquals("Hello World 1", ((TextMessage) receivedR).getText());
          assertTrue(receivedR.propertyExists("color"));
          assertEquals("green", receivedR.getStringProperty("color"));
+      }
+   }
+
+   @RepeatedTest(1)
+   @Timeout(20)
+   public void testTwoPullConsumerOnPullingBridgeConfigurationEachCanTakeOneMessageProduceOnLocal() throws Exception {
+      doTestTwoPullConsumerOnPullingBridgeConfigurationEachCanTakeOneMessage(true);
+   }
+
+   @RepeatedTest(1)
+   @Timeout(20)
+   public void testTwoPullConsumerOnPullingBridgeConfigurationEachCanTakeOneMessageProduceOnRemote() throws Exception {
+      doTestTwoPullConsumerOnPullingBridgeConfigurationEachCanTakeOneMessage(false);
+   }
+
+   public void doTestTwoPullConsumerOnPullingBridgeConfigurationEachCanTakeOneMessage(boolean produceLocal) throws Exception {
+      logger.info("Test started: {}", getTestName());
+
+      final AMQPBridgeQueuePolicyElement bridgeQueuePolicy = new AMQPBridgeQueuePolicyElement();
+      bridgeQueuePolicy.setName("bridge-queue-policy");
+      bridgeQueuePolicy.addToIncludes(getTestName(), getTestName());
+      bridgeQueuePolicy.addProperty(RECEIVER_CREDITS, 0);         // Enable Pull mode
+      bridgeQueuePolicy.addProperty(PULL_RECEIVER_BATCH_SIZE, 1); // Pull mode batch is one
+
+      final AMQPBridgeBrokerConnectionElement element1 = new AMQPBridgeBrokerConnectionElement();
+      element1.setName("Bridge-Messages-From-Remote");
+      element1.addBridgeFromQueuePolicy(bridgeQueuePolicy);
+
+      final AMQPBridgeBrokerConnectionElement element2 = new AMQPBridgeBrokerConnectionElement();
+      element2.setName("Bridge-Messages-From-Local");
+      element2.addBridgeFromQueuePolicy(bridgeQueuePolicy);
+
+      final AMQPBrokerConnectConfiguration amqpConnection1 =
+         new AMQPBrokerConnectConfiguration(getTestName(), "tcp://localhost:" + SERVER_PORT_REMOTE);
+      amqpConnection1.setReconnectAttempts(10);// Limit reconnects
+      amqpConnection1.addElement(element1);
+
+      final AMQPBrokerConnectConfiguration amqpConnection2 =
+         new AMQPBrokerConnectConfiguration(getTestName(), "tcp://localhost:" + SERVER_PORT);
+      amqpConnection2.setReconnectAttempts(10);// Limit reconnects
+      amqpConnection2.addElement(element2);
+
+      server.getConfiguration().addAMQPConnection(amqpConnection1);
+      remoteServer.getConfiguration().addAMQPConnection(amqpConnection2);
+
+      remoteServer.start();
+      remoteServer.createQueue(QueueConfiguration.of(getTestName()).setRoutingType(RoutingType.ANYCAST)
+                                                                   .setAddress(getTestName())
+                                                                   .setAutoCreated(false));
+      server.start();
+      server.createQueue(QueueConfiguration.of(getTestName()).setRoutingType(RoutingType.ANYCAST)
+                                                             .setAddress(getTestName())
+                                                             .setAutoCreated(false));
+
+      final int MESSAGE_COUNT = 2;
+      final JmsConnectionFactory factory;
+      if (produceLocal) {
+         factory = new JmsConnectionFactory("amqp://localhost:" + SERVER_PORT);
+      } else {
+         factory = new JmsConnectionFactory("amqp://localhost:" + SERVER_PORT_REMOTE);
+      }
+
+      try (Connection connection = factory.createConnection();
+           Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE)) {
+
+         final Queue queue = session.createQueue(getTestName());
+         final MessageProducer producer = session.createProducer(queue);
+
+         for (int i = 0; i < MESSAGE_COUNT; ++i) {
+            TextMessage message = session.createTextMessage("test-message:" + i);
+
+            message.setIntProperty("messageNo", i);
+
+            producer.send(message);
+         }
+      }
+
+      final JmsConnectionFactory factoryLocal = new JmsConnectionFactory(
+         "amqp://localhost:" + SERVER_PORT + "?jms.prefetchPolicy.all=0");
+      final JmsConnectionFactory factoryRemote = new JmsConnectionFactory(
+         "amqp://localhost:" + SERVER_PORT_REMOTE + "?jms.prefetchPolicy.all=0");
+
+      try (Connection connectionL = factoryLocal.createConnection();
+           Connection connectionR = factoryRemote.createConnection();
+           Session sessionL = connectionL.createSession(Session.AUTO_ACKNOWLEDGE);
+           Session sessionR = connectionR.createSession(Session.AUTO_ACKNOWLEDGE)) {
+
+         connectionL.start();
+         connectionR.start();
+
+         Wait.assertTrue(() -> server.queueQuery(SimpleString.of(getTestName())).isExists(), 10_000);
+         Wait.assertTrue(() -> remoteServer.queueQuery(SimpleString.of(getTestName())).isExists(), 10_000);
+
+         final Queue queue = sessionL.createQueue(getTestName());
+         final MessageConsumer consumerL = sessionL.createConsumer(queue);
+         final MessageConsumer consumerR = sessionR.createConsumer(queue);
+
+         Wait.assertTrue(() -> server.queueQuery(SimpleString.of(getTestName())).getConsumerCount() >= 2, 10_000);
+         Wait.assertTrue(() -> remoteServer.queueQuery(SimpleString.of(getTestName())).getConsumerCount() >= 2, 10_000);
+
+         final TextMessage messageL = (TextMessage) consumerL.receive(2_000); // Read from local
+         final TextMessage messageR = (TextMessage) consumerR.receive(2_000); // Read from remote after federated
+
+         assertNotNull(messageL);
+         assertNotNull(messageR);
+      }
+   }
+
+   @Test
+   @Timeout(20)
+   public void testCoreConsumerDemandOnLocalBrokerBridgesMessageFromAMQPClient() throws Exception {
+      testCoreConsumerDemandOnLocalBrokerBridgesMessageFromAMQPClient("CORE", "AMQP", false); // Tunneling doesn't matter here
+   }
+
+   @Test
+   @Timeout(20)
+   public void testCoreConsumerDemandOnLocalBrokerBridgesMessageFromCoreClientTunneled() throws Exception {
+      testCoreConsumerDemandOnLocalBrokerBridgesMessageFromAMQPClient("CORE", "CORE", true);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testCoreConsumerDemandOnLocalBrokerBridgesMessageFromCoreClientUnTunneled() throws Exception {
+      testCoreConsumerDemandOnLocalBrokerBridgesMessageFromAMQPClient("CORE", "CORE", false);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testAMQPConsumerDemandOnLocalBrokerBridgesMessageFromCoreClientTunneled() throws Exception {
+      testCoreConsumerDemandOnLocalBrokerBridgesMessageFromAMQPClient("AMQP", "CORE", true);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testAMQPConsumerDemandOnLocalBrokerBridgesMessageFromCoreClientNotTunneled() throws Exception {
+      testCoreConsumerDemandOnLocalBrokerBridgesMessageFromAMQPClient("AMQP", "CORE", false);
+   }
+
+   private void testCoreConsumerDemandOnLocalBrokerBridgesMessageFromAMQPClient(String localProtocol,
+                                                                                String remoteProtocol,
+                                                                                boolean enableCoreTunneling) throws Exception {
+      logger.info("Test started: {}", getTestName());
+
+      final AMQPBridgeQueuePolicyElement localQueuePolicy = new AMQPBridgeQueuePolicyElement();
+      localQueuePolicy.setName("test-policy");
+      localQueuePolicy.addToIncludes("#", getTestName());
+      localQueuePolicy.addProperty(AmqpSupport.TUNNEL_CORE_MESSAGES, Boolean.toString(enableCoreTunneling));
+
+      final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
+      element.setName(getTestName());
+      element.addBridgeFromQueuePolicy(localQueuePolicy);
+
+      final AMQPBrokerConnectConfiguration amqpConnection =
+         new AMQPBrokerConnectConfiguration(getTestName(), "tcp://localhost:" + SERVER_PORT_REMOTE);
+      amqpConnection.setReconnectAttempts(10);// Limit reconnects
+      amqpConnection.addElement(element);
+
+      server.getConfiguration().addAMQPConnection(amqpConnection);
+      remoteServer.start();
+      remoteServer.createQueue(QueueConfiguration.of(getTestName()).setRoutingType(RoutingType.ANYCAST)
+                                                                   .setAddress(getTestName())
+                                                                   .setAutoCreated(false));
+      server.start();
+
+      final ConnectionFactory factoryLocal = CFUtil.createConnectionFactory(localProtocol, "tcp://localhost:" + SERVER_PORT);
+      final ConnectionFactory factoryRemote = CFUtil.createConnectionFactory(remoteProtocol, "tcp://localhost:" + SERVER_PORT_REMOTE);
+
+      try (Connection connectionL = factoryLocal.createConnection();
+           Connection connectionR = factoryRemote.createConnection()) {
+
+         final Session sessionL = connectionL.createSession(Session.AUTO_ACKNOWLEDGE);
+         final Session sessionR = connectionR.createSession(Session.AUTO_ACKNOWLEDGE);
+
+         final MessageConsumer consumerL = sessionL.createConsumer(sessionL.createQueue(getTestName()));
+
+         connectionL.start();
+         connectionR.start();
+
+         // Demand on local address should trigger receiver on remote.
+         Wait.assertTrue(() -> server.queueQuery(SimpleString.of(getTestName())).isExists());
+         Wait.assertTrue(() -> remoteServer.queueQuery(SimpleString.of(getTestName())).isExists());
+
+         final MessageProducer producerR = sessionR.createProducer(sessionR.createQueue(getTestName()));
+         final BytesMessage message = sessionR.createBytesMessage();
+         final byte[] bodyBytes = new byte[(int)(MIN_LARGE_MESSAGE_SIZE * 1.5)];
+
+         Arrays.fill(bodyBytes, (byte)1);
+
+         message.writeBytes(bodyBytes);
+         message.setStringProperty("testProperty", "testValue");
+         message.setIntProperty("testIntProperty", 42);
+         message.setJMSCorrelationID("myCorrelationId");
+         message.setJMSReplyTo(sessionR.createTopic("reply-topic"));
+
+         producerR.setDeliveryMode(DeliveryMode.PERSISTENT);
+         producerR.send(message);
+
+         final Message received = consumerL.receive(5_000);
+         assertNotNull(received);
+         assertInstanceOf(BytesMessage.class, received);
+
+         final byte[] receivedBytes = new byte[bodyBytes.length];
+         final BytesMessage receivedBytesMsg = (BytesMessage) received;
+         receivedBytesMsg.readBytes(receivedBytes);
+
+         assertArrayEquals(bodyBytes, receivedBytes);
+         assertTrue(message.propertyExists("testProperty"));
+         assertEquals("testValue", received.getStringProperty("testProperty"));
+         assertTrue(message.propertyExists("testIntProperty"));
+         assertEquals(42, received.getIntProperty("testIntProperty"));
+         assertEquals("myCorrelationId", received.getJMSCorrelationID());
+         assertEquals("reply-topic", ((Topic) received.getJMSReplyTo()).getTopicName());
+         assertEquals(DeliveryMode.PERSISTENT, received.getJMSDeliveryMode());
+      }
+   }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeToCoreConsumerOnRemoteBrokerMessageFromAMQPClient() throws Exception {
+      testBridgeToConsumerOnRemoteBrokerMessageFromLocalProducer("AMQP", "CORE", false); // Tunneling doesn't matter here
+   }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeToCoreConsumerOnRemoteBrokerBridgesMessageFromCoreClientTunneled() throws Exception {
+      testBridgeToConsumerOnRemoteBrokerMessageFromLocalProducer("CORE", "CORE", true);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeToCoreConsumerOnRemoteBrokerBridgesMessageFromCoreClientUnTunneled() throws Exception {
+      testBridgeToConsumerOnRemoteBrokerMessageFromLocalProducer("CORE", "CORE", false);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeToAMQPConsumerOnRemoteBrokerBridgesMessageFromCoreClientTunneled() throws Exception {
+      testBridgeToConsumerOnRemoteBrokerMessageFromLocalProducer("CORE", "AMQP", true);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeToAMQPConsumerOnRemoteBrokerBridgesMessageFromCoreClientNotTunneled() throws Exception {
+      testBridgeToConsumerOnRemoteBrokerMessageFromLocalProducer("CORE", "AMQP", false);
+   }
+
+   private void testBridgeToConsumerOnRemoteBrokerMessageFromLocalProducer(String localProtocol,
+                                                                           String remoteProtocol,
+                                                                           boolean enableCoreTunneling) throws Exception {
+      logger.info("Test started: {}", getTestName());
+
+      final AMQPBridgeQueuePolicyElement localQueuePolicy = new AMQPBridgeQueuePolicyElement();
+      localQueuePolicy.setName("test-policy");
+      localQueuePolicy.addToIncludes("#", getTestName());
+      localQueuePolicy.addProperty(AmqpSupport.TUNNEL_CORE_MESSAGES, Boolean.toString(enableCoreTunneling));
+
+      final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
+      element.setName(getTestName());
+      element.addBridgeToQueuePolicy(localQueuePolicy);
+
+      final AMQPBrokerConnectConfiguration amqpConnection =
+         new AMQPBrokerConnectConfiguration(getTestName(), "tcp://localhost:" + SERVER_PORT_REMOTE);
+      amqpConnection.setReconnectAttempts(10);// Limit reconnects
+      amqpConnection.addElement(element);
+
+      server.getConfiguration().addAMQPConnection(amqpConnection);
+      remoteServer.start();
+      remoteServer.createQueue(QueueConfiguration.of(getTestName()).setRoutingType(RoutingType.ANYCAST)
+                                                                   .setAddress(getTestName())
+                                                                   .setAutoCreated(false));
+      server.start();
+      server.createQueue(QueueConfiguration.of(getTestName()).setRoutingType(RoutingType.ANYCAST)
+                                                             .setAddress(getTestName())
+                                                             .setAutoCreated(false));
+
+      final ConnectionFactory factoryLocal = CFUtil.createConnectionFactory(localProtocol, "tcp://localhost:" + SERVER_PORT);
+      final ConnectionFactory factoryRemote = CFUtil.createConnectionFactory(remoteProtocol, "tcp://localhost:" + SERVER_PORT_REMOTE);
+
+      try (Connection connectionL = factoryLocal.createConnection();
+           Connection connectionR = factoryRemote.createConnection()) {
+
+         final Session sessionL = connectionL.createSession(Session.AUTO_ACKNOWLEDGE);
+         final Session sessionR = connectionR.createSession(Session.AUTO_ACKNOWLEDGE);
+
+         final MessageConsumer consumerR = sessionR.createConsumer(sessionR.createQueue(getTestName()));
+
+         connectionL.start();
+         connectionR.start();
+
+         // Demand on local address should trigger receiver on remote.
+         Wait.assertTrue(() -> server.queueQuery(SimpleString.of(getTestName())).isExists());
+         Wait.assertTrue(() -> remoteServer.queueQuery(SimpleString.of(getTestName())).isExists());
+
+         final MessageProducer producerL = sessionL.createProducer(sessionL.createQueue(getTestName()));
+         final BytesMessage message = sessionL.createBytesMessage();
+         final byte[] bodyBytes = new byte[(int)(MIN_LARGE_MESSAGE_SIZE * 1.5)];
+
+         Arrays.fill(bodyBytes, (byte)1);
+
+         message.writeBytes(bodyBytes);
+         message.setStringProperty("testProperty", "testValue");
+         message.setIntProperty("testIntProperty", 42);
+         message.setJMSCorrelationID("myCorrelationId");
+         message.setJMSReplyTo(sessionL.createTopic("reply-topic"));
+
+         producerL.setDeliveryMode(DeliveryMode.PERSISTENT);
+         producerL.send(message);
+
+         final Message received = consumerR.receive(5_000);
+         assertNotNull(received);
+         assertInstanceOf(BytesMessage.class, received);
+
+         final byte[] receivedBytes = new byte[bodyBytes.length];
+         final BytesMessage receivedBytesMsg = (BytesMessage) received;
+         receivedBytesMsg.readBytes(receivedBytes);
+
+         assertArrayEquals(bodyBytes, receivedBytes);
+         assertTrue(message.propertyExists("testProperty"));
+         assertEquals("testValue", received.getStringProperty("testProperty"));
+         assertTrue(message.propertyExists("testIntProperty"));
+         assertEquals(42, received.getIntProperty("testIntProperty"));
+         assertEquals("myCorrelationId", received.getJMSCorrelationID());
+         assertEquals("reply-topic", ((Topic) received.getJMSReplyTo()).getTopicName());
+         assertEquals(DeliveryMode.PERSISTENT, received.getJMSDeliveryMode());
       }
    }
 }

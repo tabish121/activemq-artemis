@@ -20,8 +20,12 @@ import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridg
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.LINK_RECOVERY_INITIAL_DELAY;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.MAX_LINK_RECOVERY_ATTEMPTS;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.PRESETTLE_SEND_MODE;
+import static org.apache.activemq.artemis.protocol.amqp.proton.AMQPTunneledMessageConstants.AMQP_TUNNELED_CORE_MESSAGE_FORMAT;
+import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.CORE_MESSAGE_TUNNELING_SUPPORT;
+import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.TUNNEL_CORE_MESSAGES;
 import static org.hamcrest.CoreMatchers.allOf;
 import static org.hamcrest.CoreMatchers.containsString;
+import static org.hamcrest.CoreMatchers.notNullValue;
 import java.lang.invoke.MethodHandles;
 import java.net.URI;
 import java.util.concurrent.TimeUnit;
@@ -592,7 +596,7 @@ class AMQPBridgeToAddressTest  extends AmqpClientTestSupport {
          sendToAddress.addToIncludes("test");
          sendToAddress.addToIncludes("another");
          sendToAddress.addProperty(LINK_RECOVERY_INITIAL_DELAY, 1);  // 1 millisecond initial recovery delay
-         sendToAddress.addProperty(LINK_RECOVERY_DELAY, 10);         // 10 millisecond continued recovery delay
+         sendToAddress.addProperty(LINK_RECOVERY_DELAY, 15);         // 15 millisecond continued recovery delay
          sendToAddress.addProperty(MAX_LINK_RECOVERY_ATTEMPTS, 2);   // 2 attempts then stop trying
 
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
@@ -736,10 +740,6 @@ class AMQPBridgeToAddressTest  extends AmqpClientTestSupport {
          server.addAddressInfo(new AddressInfo(SimpleString.of("test"), RoutingType.MULTICAST));
 
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
-
-         // add the alternate and it should trigger an attach on that address.
-         server.addAddressInfo(new AddressInfo(SimpleString.of("another"), RoutingType.MULTICAST));
-
          peer.expectAttach().ofSender()
                             .withTarget().withAddress("another").also()
                             .withSource().withAddress("another").also()
@@ -750,10 +750,12 @@ class AMQPBridgeToAddressTest  extends AmqpClientTestSupport {
                                             containsString(server.getNodeID().toString())))
                             .respond();
 
-         // Remove and add the address again which should trigger new attempt
+         // add the alternate and it should trigger an attach on that address.
+         server.addAddressInfo(new AddressInfo(SimpleString.of("another"), RoutingType.MULTICAST));
+         // Remove and later add the address again which should trigger new attempt
          server.removeAddressInfo(SimpleString.of("test"), null, true);
-         server.addAddressInfo(new AddressInfo(SimpleString.of("test"), RoutingType.MULTICAST));
 
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
          peer.expectAttach().ofSender()
                             .withTarget().withAddress("test").also()
                             .withSource().withAddress("test").also()
@@ -763,6 +765,10 @@ class AMQPBridgeToAddressTest  extends AmqpClientTestSupport {
                                             containsString("amqp-bridge"),
                                             containsString(server.getNodeID().toString())))
                             .respond();
+
+         server.addAddressInfo(new AddressInfo(SimpleString.of("test"), RoutingType.MULTICAST));
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
 
          Wait.assertTrue(() -> server.addressQuery(SimpleString.of("test")).isExists());
          Wait.assertTrue(() -> server.bindingQuery(SimpleString.of("test")).getQueueNames().size() > 0);
@@ -832,6 +838,131 @@ class AMQPBridgeToAddressTest  extends AmqpClientTestSupport {
          Wait.assertTrue(() -> server.addressQuery(SimpleString.of("test")).isExists());
 
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.close();
+      }
+   }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeSendCoreMessageTunneleInAMQPMessageWhenSupported() throws Exception {
+      doTestBridgeSendMessagesAccordingToTunnelingState(true, true);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeSendCoreMessageConvertedToAMQPMessageWhenTunnelNotSupported() throws Exception {
+      doTestBridgeSendMessagesAccordingToTunnelingState(true, false);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeSendCoreMessageConvertedToAMQPMessageWhenConfigurationDisabledTunneling() throws Exception {
+      doTestBridgeSendMessagesAccordingToTunnelingState(false, true);
+   }
+
+   public void doTestBridgeSendMessagesAccordingToTunnelingState(boolean enabled, boolean receiverSupport) throws Exception {
+      try (ProtonTestServer peer = new ProtonTestServer()) {
+         peer.expectSASLAnonymousConnect();
+         peer.expectOpen().respond();
+         peer.expectBegin().respond();
+         peer.start();
+
+         final URI remoteURI = peer.getServerURI();
+         logger.info("Test started, peer listening on: {}", remoteURI);
+
+         final AMQPBridgeAddressPolicyElement sendToAddress = new AMQPBridgeAddressPolicyElement();
+         sendToAddress.setName("address-policy");
+         sendToAddress.addToIncludes(getTestName());
+         sendToAddress.addProperty(TUNNEL_CORE_MESSAGES, Boolean.toString(enabled));
+
+         final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
+         element.setName(getTestName());
+         element.addBridgeToAddressPolicy(sendToAddress);
+
+         final AMQPBrokerConnectConfiguration amqpConnection =
+            new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
+         amqpConnection.setReconnectAttempts(0);// No reconnects
+         amqpConnection.addElement(element);
+
+         server.getConfiguration().addAMQPConnection(amqpConnection);
+         server.start();
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         if (receiverSupport && enabled) {
+            peer.expectAttach().ofSender()
+                               .withTarget().withAddress(getTestName()).also()
+                               .withSource().withAddress(getTestName()).also()
+                               .withDesiredCapabilities(CORE_MESSAGE_TUNNELING_SUPPORT.toString())
+                               .withName(allOf(containsString(getTestName()),
+                                               containsString("address-sender"),
+                                               containsString("amqp-bridge"),
+                                               containsString(server.getNodeID().toString())))
+                               .respond()
+                               .withOfferedCapabilities(CORE_MESSAGE_TUNNELING_SUPPORT.toString());
+         } else if (enabled) {
+            peer.expectAttach().ofSender()
+                               .withTarget().withAddress(getTestName()).also()
+                               .withSource().withAddress(getTestName()).also()
+                               .withDesiredCapabilities(CORE_MESSAGE_TUNNELING_SUPPORT.toString())
+                               .withName(allOf(containsString(getTestName()),
+                                               containsString("address-sender"),
+                                               containsString("amqp-bridge"),
+                                               containsString(server.getNodeID().toString())))
+                               .respond();
+         } else {
+            peer.expectAttach().ofSender()
+                               .withTarget().withAddress(getTestName()).also()
+                               .withSource().withAddress(getTestName()).also()
+                               .withName(allOf(containsString(getTestName()),
+                                               containsString("address-sender"),
+                                               containsString("amqp-bridge"),
+                                               containsString(server.getNodeID().toString())))
+                               .respond();
+         }
+         peer.remoteFlow().withLinkCredit(1).queue();
+
+         server.addAddressInfo(new AddressInfo(SimpleString.of(getTestName()), RoutingType.MULTICAST));
+
+         Wait.assertTrue(() -> server.addressQuery(SimpleString.of(getTestName())).isExists());
+         Wait.assertTrue(() -> server.bindingQuery(SimpleString.of(getTestName())).getQueueNames().size() > 0);
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+
+         final ConnectionFactory factory = CFUtil.createConnectionFactory("CORE", "tcp://localhost:" + AMQP_PORT);
+
+         // Producer connect should create the address and initiate the bridge sender attach
+         try (Connection connection = factory.createConnection()) {
+            final Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE);
+            final MessageProducer producer = session.createProducer(session.createTopic(getTestName()));
+
+            // Await bridge sender attach.
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+
+            if (enabled && receiverSupport) {
+               peer.expectTransfer().withMessageFormat(AMQP_TUNNELED_CORE_MESSAGE_FORMAT)
+                                    .withMessage().withData(notNullValue()).also()
+                                    .accept();
+            } else {
+               peer.expectTransfer().withMessageFormat(0)
+                                    .withMessage().withHeader().also()
+                                                  .withMessageAnnotations().also()
+                                                  .withApplicationProperties().also()
+                                                  .withProperties().also()
+                                                  .withValue("Hello")
+                                    .and()
+                                    .accept();
+            }
+
+            connection.start();
+
+            Wait.assertTrue(() -> server.addressQuery(SimpleString.of(getTestName())).isExists());
+            Wait.assertTrue(() -> server.bindingQuery(SimpleString.of(getTestName())).getQueueNames().size() > 0);
+
+            producer.send(session.createTextMessage("Hello"));
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         }
+
          peer.close();
       }
    }

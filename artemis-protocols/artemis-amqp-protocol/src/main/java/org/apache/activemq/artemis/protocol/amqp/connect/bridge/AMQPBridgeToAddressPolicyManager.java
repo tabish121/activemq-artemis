@@ -25,12 +25,9 @@ import java.util.UUID;
 
 import org.apache.activemq.artemis.api.core.ActiveMQException;
 import org.apache.activemq.artemis.api.core.SimpleString;
-import org.apache.activemq.artemis.core.server.ActiveMQServer;
 import org.apache.activemq.artemis.core.server.impl.AddressInfo;
 import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerAddressPlugin;
 import org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeSenderInfo.Role;
-import org.apache.activemq.artemis.protocol.amqp.proton.AMQPSessionContext;
-import org.apache.qpid.proton.engine.Session;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -39,131 +36,56 @@ import org.slf4j.LoggerFactory;
  * and creates senders to the remote peer for that address until such time as the address is
  * removed locally.
  */
-public class AMQPBridgeToAddressPolicyManager implements AMQPBridgePolicyManager, ActiveMQServerAddressPlugin {
+public class AMQPBridgeToAddressPolicyManager extends AMQPBridgeToPolicyManager implements ActiveMQServerAddressPlugin {
 
    private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
-   private final ActiveMQServer server;
-   private final AMQPBridgeManager bridge;
    private final AMQPBridgeAddressPolicy policy;
-   private final Map<String, AMQPBridgeToAddressEntry> addressTracking = new HashMap<>();
+   private final Map<String, AMQPBridgeAddressSenderManager> addressTracking = new HashMap<>();
 
-   private volatile AMQPBridgeSenderConfiguration configuration;
-   private volatile AMQPSessionContext session;
-   private volatile boolean started;
-   private volatile boolean connected;
+   public AMQPBridgeToAddressPolicyManager(AMQPBridgeManager bridge, AMQPBridgeMetrics metrics, AMQPBridgeAddressPolicy policy) {
+      super(bridge, metrics, policy.getPolicyName(), AMQPBridgeType.BRIDGE_TO_ADDRESS);
 
-   public AMQPBridgeToAddressPolicyManager(AMQPBridgeManager bridge, AMQPBridgeAddressPolicy addressPolicy) {
-      Objects.requireNonNull(bridge, "The AMQP Bridge instance cannot be null");
-      Objects.requireNonNull(addressPolicy, "The Address match policy cannot be null");
+      Objects.requireNonNull(policy, "The Address match policy cannot be null");
 
-      this.bridge = bridge;
-      this.policy = addressPolicy;
-      this.server = bridge.getServer();
+      this.policy = policy;
    }
 
    /**
     * @return the policy that defines the bridged address this policy manager monitors.
     */
+   @Override
    public AMQPBridgeAddressPolicy getPolicy() {
       return policy;
    }
 
    @Override
-   public boolean isStarted() {
-      return started;
+   protected void scanManagedResources() {
+      server.getPostOffice()
+            .getAddresses()
+            .stream()
+            .map(address -> server.getAddressInfo(address))
+            .forEach(addressInfo -> afterAddAddress(addressInfo, false));
    }
 
-   /**
-    * Start the address policy manager which will initiate a scan of all broker address
-    * bindings and create and matching remote senders. Start on a policy manager
-    * should only be called after its parent {@link AMQPBridgeManager} is started.
-    *
-    * @throws ActiveMQException if an error occurs while starting the policy manager.
-    */
    @Override
-   public synchronized void start() throws ActiveMQException {
-      if (!started && bridge.isStarted()) {
-         started = true;
-
-         if (connected) {
-            startManagerServices();
-         }
+   protected void safeCleanupManagerResources() {
+      try {
+         addressTracking.forEach((k, v) -> {
+            v.shutdownNow();
+         });
+      } finally {
+         addressTracking.clear();
       }
-   }
-
-   /**
-    * Stops the address policy manager which will close any open remote senders that are
-    * active for local queue existence.
-    */
-   @Override
-   public synchronized void stop() {
-      if (started) {
-         started = false;
-         stopManagerServices();
-      }
-   }
-
-   /**
-    * Called by the parent AMQP bridge manager when the connection has failed and this AMQP policy
-    * manager should tear down any active resources and await a reconnect if one is allowed.
-    */
-   @Override
-   public synchronized void connectionDropped() {
-      connected = false;
-
-      if (started) {
-         stopManagerServices();
-      }
-   }
-
-   /**
-    * Called by the parent AMQP bridge manager when the connection has been established and this
-    * AMQP policy manager should build up its active state based on the configuration.
-    *
-    * @param session
-    *    The new {@link Session} that was created for use by broker connection resources.
-    * @param configuration
-    *    The bridge configuration that hold state relative to the new active connection.
-    *
-    * @throws ActiveMQException if an error occurs processing the connection restored event
-    */
-   @Override
-   public synchronized void connectionRestored(AMQPSessionContext session, AMQPBridgeConfiguration configuration) throws ActiveMQException {
-      this.connected = true;
-      this.configuration = new AMQPBridgeSenderConfiguration(configuration, policy.getProperties());
-      this.session = session;
-
-      if (started) {
-         startManagerServices();
-      }
-   }
-
-   private void stopManagerServices() {
-      server.unRegisterBrokerPlugin(this);
-      addressTracking.forEach((k, v) -> {
-         v.close();
-      });
-      addressTracking.clear();
-   }
-
-   private void startManagerServices() {
-      server.registerBrokerPlugin(this);
-      scanAllAddresses();
    }
 
    @Override
    public synchronized void afterAddAddress(AddressInfo addressInfo, boolean reload) {
-      logger.info("Scanning added address: {}", addressInfo);
-      if (started && policy.test(addressInfo)) {
+      if (isActive() && policy.test(addressInfo)) {
          try {
-            if (!addressTracking.containsKey(addressInfo.getName().toString())) {
-               final AMQPBridgeToAddressEntry entry = new AMQPBridgeToAddressEntry(addressInfo);
-
-               addressTracking.put(entry.getLocalAddress(), entry);
-
-               tryCreateBridgeSenderForAddress(entry);
-            }
+            final AMQPBridgeAddressSenderManager manager = new AMQPBridgeAddressSenderManager(this, configuration, addressInfo);
+            addressTracking.put(manager.getAddress(), manager);
+            manager.start();
          } catch (Exception e) {
             logger.warn("Error looking up bindings for address {}.", addressInfo, e);
          }
@@ -172,103 +94,12 @@ public class AMQPBridgeToAddressPolicyManager implements AMQPBridgePolicyManager
 
    @Override
    public synchronized void afterRemoveAddress(SimpleString address, AddressInfo addressInfo) throws ActiveMQException {
-      if (started) {
-         final AMQPBridgeToAddressEntry entry = addressTracking.remove(address.toString());
+      if (isActive()) {
+         final AMQPBridgeAddressSenderManager manager = addressTracking.remove(address.toString());
 
-         if (entry != null) {
-            logger.trace("Closing remote sender for bridged Address {}", entry.getLocalAddress());
-            entry.close();
-         }
-      }
-   }
-
-   private void scanAllAddresses() {
-      server.getPostOffice()
-            .getAddresses()
-            .stream()
-            .map(address -> server.getAddressInfo(address))
-            .forEach(addressInfo -> afterAddAddress(addressInfo, false));
-   }
-
-   private void tryCreateBridgeSenderForAddress(AMQPBridgeToAddressEntry addressEntry) {
-      final AddressInfo addressInfo = addressEntry.getAddressInfo();
-
-      if (!addressEntry.hasSender()) {
-         logger.trace("AMQP Bridge to Address Policy manager creating remote sender for address: {}", addressInfo);
-
-         final AMQPBridgeSenderInfo senderInfo = createSenderInfo(addressInfo);
-         final AMQPBridgeSender addressSender = createBridgeSender(senderInfo);
-
-         // Handle remote open and cancel any additional link recovery attempts. Ensure that
-         // thread safety is accounted for here as the notification come from the connection
-         // thread.
-         addressSender.setRemoteOpenHandler(openedSender -> {
-            synchronized (this) {
-               final AMQPBridgeLinkRecoveryHandler<AMQPBridgeToAddressEntry> recoveryHandler = addressEntry.getRecoveryHandler();
-
-               // We've connected so any existing recovery handler can now be closed and cleared
-               // as we will create a new one if the link is forced closed by the remote and we
-               // determine the outcome of that is not terminal to the connection.
-               if (recoveryHandler != null) {
-                  try {
-                     recoveryHandler.close();
-                  } finally {
-                     addressEntry.clearRecoveryHandler();
-                  }
-               }
-            }
-         });
-
-         // Handle remote close with remove of sender which means that future demand will
-         // attempt to create a new sender for that demand. Ensure that thread safety is
-         // accounted for here as the notification can be asynchronous.
-         addressSender.setRemoteClosedHandler((closedSender) -> {
-            synchronized (this) {
-               try {
-                  final AMQPBridgeToAddressEntry tracked = addressTracking.get(addressEntry.getLocalAddress());
-
-                  if (tracked != null) {
-                     tracked.clearSender();
-                  }
-               } finally {
-                  closedSender.close();
-               }
-
-               if (configuration.isLinkRecoveryEnabled()) {
-                  // If the close came from a previous attempt that is itself a recovery we use the
-                  // existing entry's recovery handler, otherwise we need to create a new handler
-                  // to deal with link recovery.
-                  AMQPBridgeLinkRecoveryHandler<AMQPBridgeToAddressEntry> recoveryHandler = addressEntry.getRecoveryHandler();
-                  if (recoveryHandler == null) {
-                     addressEntry.setRecoveryHandler(
-                        recoveryHandler = new AMQPBridgeLinkRecoveryHandler<>(addressEntry, this::linkRecoveryHandler, configuration));
-                  }
-
-                  final boolean scheduled = recoveryHandler.tryScheduleNextRecovery(server.getScheduledPool());
-
-                  if (!scheduled) {
-                     try {
-                        recoveryHandler.close();
-                     } finally {
-                        addressEntry.clearRecoveryHandler();
-                     }
-                  }
-               }
-            }
-         });
-
-         addressEntry.setSender(addressSender);
-
-         addressSender.start();
-      }
-   }
-
-   protected final void linkRecoveryHandler(AMQPBridgeToAddressEntry entry) {
-      synchronized (this) {
-         if (started) {
-            // This will check for existing demand and or an existing sender
-            // in order to prevent duplicate links so we don't need to check here.
-            tryCreateBridgeSenderForAddress(entry);
+         if (manager != null) {
+            logger.trace("Clearing sender tracking for removed bridged Address {}", addressInfo.getName());
+            manager.shutdownNow();
          }
       }
    }
@@ -282,7 +113,7 @@ public class AMQPBridgeToAddressPolicyManager implements AMQPBridgePolicyManager
 
       // Don't initiate anything yet as the caller might need to register error handlers etc
       // before the attach is sent otherwise they could miss the failure case.
-      return new AMQPBridgeToAddressSender(bridge, configuration, session, senderInfo, policy);
+      return new AMQPBridgeToAddressSender(this, configuration, session, senderInfo, metrics.newSenderMetrics());
    }
 
    private String generateTempQueueName(String remoteAddress) {
@@ -316,5 +147,30 @@ public class AMQPBridgeToAddressPolicyManager implements AMQPBridgePolicyManager
                                       generateTempQueueName(remoteAddress),
                                       address.getRoutingType(),
                                       remoteAddress);
+   }
+
+   private static class AMQPBridgeAddressSenderManager extends AMQPBridgeSenderManager {
+
+      private final AMQPBridgeToAddressPolicyManager manager;
+      private final AddressInfo addressInfo;
+
+      AMQPBridgeAddressSenderManager(AMQPBridgeToAddressPolicyManager manager, AMQPBridgeSenderConfiguration configuration, AddressInfo addressInfo) {
+         super(manager, configuration);
+
+         this.manager = manager;
+         this.addressInfo = addressInfo;
+      }
+
+      /**
+       * @return the address that this entry is acting to bridge.
+       */
+      public String getAddress() {
+         return addressInfo.getName().toString();
+      }
+
+      @Override
+      protected AMQPBridgeSender createBridgeSender() {
+         return manager.createBridgeSender(manager.createSenderInfo(addressInfo));
+      }
    }
 }

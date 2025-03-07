@@ -16,6 +16,7 @@
  */
 package org.apache.activemq.artemis.tests.integration.amqp.connect;
 
+import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.ADDRESS_RECEIVER_IDLE_TIMEOUT;
 import static org.hamcrest.CoreMatchers.allOf;
 import static org.hamcrest.CoreMatchers.containsString;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -87,6 +88,7 @@ class AMQPBridgeConfigurationReloadTest extends AmqpClientTestSupport {
          final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
          element.setName(getTestName());
          element.addBridgeFromAddressPolicy(receiveFromAddress);
+         element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
@@ -138,6 +140,9 @@ class AMQPBridgeConfigurationReloadTest extends AmqpClientTestSupport {
             connection.start();
 
             peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+            peer.expectFlow().withLinkCredit(1000).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(1000).withDrain(true);
             peer.expectDetach().respond();
 
             consumer.close();

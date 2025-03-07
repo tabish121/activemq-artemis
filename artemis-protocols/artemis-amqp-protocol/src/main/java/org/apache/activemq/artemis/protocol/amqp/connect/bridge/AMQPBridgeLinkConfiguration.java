@@ -27,6 +27,7 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
 
+import org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport;
 import org.apache.qpid.proton.engine.Receiver;
 
 /**
@@ -45,7 +46,7 @@ public abstract class AMQPBridgeLinkConfiguration {
       this.configuration = configuration;
 
       if (properties == null || properties.isEmpty()) {
-         this.properties = Collections.EMPTY_MAP;
+         this.properties = Collections.emptyMap();
       } else {
          this.properties = (Map<String, Object>) Collections.unmodifiableMap(new HashMap<>(properties));
       }
@@ -125,6 +126,20 @@ public abstract class AMQPBridgeLinkConfiguration {
          return Integer.parseInt((String) property);
       } else {
          return configuration.getLinkRecoveryDelay();
+      }
+   }
+
+   /**
+    * @return true if the bridge is configured to tunnel core messages as AMQP custom messages.
+    */
+   public boolean isCoreMessageTunnelingEnabled() {
+      final Object property = properties.get(AmqpSupport.TUNNEL_CORE_MESSAGES);
+      if (property instanceof Boolean) {
+         return (Boolean) property;
+      } else if (property instanceof String) {
+         return Boolean.parseBoolean((String) property);
+      } else {
+         return configuration.isCoreMessageTunnelingEnabled();
       }
    }
 }

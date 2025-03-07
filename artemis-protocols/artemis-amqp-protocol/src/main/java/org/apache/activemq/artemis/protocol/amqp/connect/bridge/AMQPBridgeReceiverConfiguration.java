@@ -21,9 +21,11 @@ import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridg
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.IGNORE_QUEUE_FILTERS;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.RECEIVER_CREDITS;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.RECEIVER_CREDITS_LOW;
-import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.IGNORE_QUEUE_CONSUMER_PRIORITIES;
+import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.RECEIVER_QUIESCE_TIMEOUT;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.PULL_RECEIVER_BATCH_SIZE;
+import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.QUEUE_RECEIVER_IDLE_TIMEOUT;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.LARGE_MESSAGE_THRESHOLD;
+import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.ADDRESS_RECEIVER_IDLE_TIMEOUT;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.DISABLE_RECEIVER_DEMAND_TRACKING;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.DISABLE_RECEIVER_PRIORITY;
 import java.util.Map;
@@ -32,7 +34,7 @@ import org.apache.qpid.proton.engine.Receiver;
 /**
  * Configuration options applied to a receiver created from bridge from policies for
  * address or queue bridging. The options first check the policy properties for
- * matching configuration settings before looking at the bridge's own configuration
+ * matching configuration settings before looking at the bridgeManager's own configuration
  * for the options managed here.
  */
 public final class AMQPBridgeReceiverConfiguration extends AMQPBridgeLinkConfiguration {
@@ -84,6 +86,48 @@ public final class AMQPBridgeReceiverConfiguration extends AMQPBridgeLinkConfigu
    }
 
    /**
+    * @return the configured receiver quiesce timeout before the operation is assumed to have failed.
+    */
+   public int getReceiverQuiesceTimeout() {
+      final Object property = properties.get(RECEIVER_QUIESCE_TIMEOUT);
+      if (property instanceof Number number) {
+         return number.intValue();
+      } else if (property instanceof String string) {
+         return Integer.parseInt(string);
+      } else {
+         return configuration.getReceiverQuiesceTimeout();
+      }
+   }
+
+   /**
+    * @return the idle timeout for a drained bridge address receiver before it is closed.
+    */
+   public int getAddressReceiverIdleTimeout() {
+      final Object property = properties.get(ADDRESS_RECEIVER_IDLE_TIMEOUT);
+      if (property instanceof Number number) {
+         return number.intValue();
+      } else if (property instanceof String string) {
+         return Integer.parseInt(string);
+      } else {
+         return configuration.getAddressReceiverIdleTimeout();
+      }
+   }
+
+   /**
+    * @return the idle timeout for a drained bridge queue receiver before it is closed.
+    */
+   public int getQueueReceiverIdleTimeout() {
+      final Object property = properties.get(QUEUE_RECEIVER_IDLE_TIMEOUT);
+      if (property instanceof Number number) {
+         return number.intValue();
+      } else if (property instanceof String string) {
+         return Integer.parseInt(string);
+      } else {
+         return configuration.getQueueReceiverIdleTimeout();
+      }
+   }
+
+   /**
     * @return the size in bytes of an incoming message after which the {@link Receiver} treats it as large.
     */
    public int getLargeMessageThreshold() {
@@ -98,7 +142,7 @@ public final class AMQPBridgeReceiverConfiguration extends AMQPBridgeLinkConfigu
    }
 
    /**
-    * @return <code>true</code> if the bridge is configured to ignore filters on individual queue consumers
+    * @return <code>true</code> if the bridgeManager is configured to ignore filters on individual queue consumers
     */
    public boolean isIgnoreSubscriptionFilters() {
       final Object property = properties.get(IGNORE_QUEUE_CONSUMER_FILTERS);
@@ -112,7 +156,7 @@ public final class AMQPBridgeReceiverConfiguration extends AMQPBridgeLinkConfigu
    }
 
    /**
-    * @return <code>true</code> if the bridge is configured to ignore filters on the bridged Queue.
+    * @return <code>true</code> if the bridgeManager is configured to ignore filters on the bridged Queue.
     */
    public boolean isIgnoreQueueFilters() {
       final Object property = properties.get(IGNORE_QUEUE_FILTERS);
@@ -126,21 +170,7 @@ public final class AMQPBridgeReceiverConfiguration extends AMQPBridgeLinkConfigu
    }
 
    /**
-    * @return <code>true</code> if the bridge is configured to ignore priorities of local Queue consumers.
-    */
-   public boolean isIgnoreSubscriptionPriorities() {
-      final Object property = properties.get(IGNORE_QUEUE_CONSUMER_PRIORITIES);
-      if (property instanceof Boolean) {
-         return (Boolean) property;
-      } else if (property instanceof String) {
-         return Boolean.parseBoolean((String) property);
-      } else {
-         return configuration.isIgnoreSubscriptionPriorities();
-      }
-   }
-
-   /**
-    * @return <code>true</code> if bridge is configured to omit any priority properties on receiver links.
+    * @return <code>true</code> if bridgeManager is configured to omit any priority properties on receiver links.
     */
    public boolean isReceiverPriorityDisabled() {
       final Object property = properties.get(DISABLE_RECEIVER_PRIORITY);
@@ -154,7 +184,7 @@ public final class AMQPBridgeReceiverConfiguration extends AMQPBridgeLinkConfigu
    }
 
    /**
-    * @return <code>true</code> if bridge is configured to ignore local demand and always create a receiver.
+    * @return <code>true</code> if bridgeManager is configured to ignore local demand and always create a receiver.
     */
    public boolean isReceiverDemandTrackingDisabled() {
       final Object property = properties.get(DISABLE_RECEIVER_DEMAND_TRACKING);

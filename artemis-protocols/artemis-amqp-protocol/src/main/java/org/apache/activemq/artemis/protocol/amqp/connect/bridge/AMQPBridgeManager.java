@@ -30,6 +30,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Predicate;
 
 import org.apache.activemq.artemis.api.core.ActiveMQException;
+import org.apache.activemq.artemis.api.core.ActiveMQIllegalStateException;
 import org.apache.activemq.artemis.core.config.WildcardConfiguration;
 import org.apache.activemq.artemis.core.server.ActiveMQServer;
 import org.apache.activemq.artemis.protocol.amqp.connect.AMQPBrokerConnection;
@@ -51,6 +52,13 @@ public class AMQPBridgeManager {
 
    private static final WildcardConfiguration DEFAULT_WILDCARD_CONFIGURATION = new WildcardConfiguration();
 
+   private enum State {
+      UNITIALIZED,
+      STOPPED,
+      STARTED,
+      SHUTDOWN
+   }
+
    private final String name;
    private final ActiveMQServer server;
    private final AMQPBrokerConnection brokerConnection;
@@ -59,10 +67,12 @@ public class AMQPBridgeManager {
    private final Map<String, Object> properties;
    private final Map<String, Predicate<Link>> linkClosedinterceptors = new ConcurrentHashMap<>();
    private final Set<AMQPBridgePolicyManager> policyManagers = new HashSet<>();
+   private final AMQPBridgeMetrics metrics = new AMQPBridgeMetrics();
 
    private volatile AMQPBridgeConfiguration configuration;
 
-   private volatile boolean started;
+   protected volatile State state = State.UNITIALIZED;
+   protected volatile boolean connected;
 
    @SuppressWarnings("unchecked")
    AMQPBridgeManager(String name, AMQPBrokerConnection brokerConnection,
@@ -85,10 +95,10 @@ public class AMQPBridgeManager {
          this.properties = (Map<String, Object>) Collections.unmodifiableMap(new HashMap<>(properties));
       }
 
-      fromAddressPolicies.forEach(policy -> this.policyManagers.add(new AMQPBridgeFromAddressPolicyManager(this, policy)));
-      fromQueuePolicies.forEach(policy -> this.policyManagers.add(new AMQPBridgeFromQueuePolicyManager(this, policy)));
-      toAddressPolicies.forEach(policy -> this.policyManagers.add(new AMQPBridgeToAddressPolicyManager(this, policy)));
-      toQueuePolicies.forEach(policy -> this.policyManagers.add(new AMQPBridgeToQueuePolicyManager(this, policy)));
+      fromAddressPolicies.forEach(policy -> this.policyManagers.add(new AMQPBridgeFromAddressPolicyManager(this, metrics.newPolicyMetrics(), policy)));
+      fromQueuePolicies.forEach(policy -> this.policyManagers.add(new AMQPBridgeFromQueuePolicyManager(this, metrics.newPolicyMetrics(), policy)));
+      toAddressPolicies.forEach(policy -> this.policyManagers.add(new AMQPBridgeToAddressPolicyManager(this, metrics.newPolicyMetrics(), policy)));
+      toQueuePolicies.forEach(policy -> this.policyManagers.add(new AMQPBridgeToQueuePolicyManager(this, metrics.newPolicyMetrics(), policy)));
 
       if (server.getConfiguration().getWildcardConfiguration() != null) {
          this.wildcardConfiguration = server.getConfiguration().getWildcardConfiguration();
@@ -98,18 +108,47 @@ public class AMQPBridgeManager {
    }
 
    /**
-    * Start the bridge instance if not already started.
+    * Initialize this bridge instance if not already initialized.
     *
-    * @throws ActiveMQException if an error occurs during the start.
+    * @throws ActiveMQException if an error occurs during the initialization process.
     */
-   public synchronized void start() throws ActiveMQException {
-      if (!started) {
-         started = true;
+   public final synchronized void initialize() throws ActiveMQException {
+      failIfShutdown();
+
+      if (state == State.UNITIALIZED) {
+         state = State.STOPPED;
+
+         try {
+            AMQPBridgeManagementSupport.registerBridgeManager(this);
+         } catch (Exception e) {
+            logger.warn("Ignoring error while attempting to register bridge with management services");
+         }
+
+         for (AMQPBridgePolicyManager manager : policyManagers) {
+            manager.initialize();
+         }
+      }
+   }
+
+   /**
+    * Starts this bridge instance if not already started.
+    *
+    * @throws ActiveMQException if an error occurs during the start process.
+    */
+   public final synchronized void start() throws ActiveMQException {
+      failIfShutdown();
+
+      if (state.ordinal() < State.STOPPED.ordinal()) {
+         throw new ActiveMQIllegalStateException("The bridge has not been initialized and cannot be started.");
+      }
+
+      if (state == State.STOPPED) {
+         state = State.STARTED;
 
          for (AMQPBridgePolicyManager manager : policyManagers) {
             try {
                manager.start();
-            } catch (ActiveMQException e) {
+            } catch (Exception e) {
                logger.debug("Caught error while starting a policy manager: ", e);
                throw e;
             }
@@ -118,14 +157,47 @@ public class AMQPBridgeManager {
    }
 
    /**
-    * Stop the bridge instance if not already stopped.
+    * Stops this bridge instance and shuts down all remote resources that
+    * the bridge currently has open and active.
+    *
+    * @throws ActiveMQException if an error occurs during the stop process.
     */
-   public synchronized void stop() {
-      if (started) {
-         started = false;
+   public final synchronized void stop() throws ActiveMQException {
+      if (state.ordinal() < State.STOPPED.ordinal()) {
+         throw new ActiveMQIllegalStateException("The bridge has not been initialized and cannot be stopped.");
+      }
+
+      if (state == State.STARTED) {
+         state = State.STOPPED;
 
          for (AMQPBridgePolicyManager manager : policyManagers) {
-            manager.stop();
+            try {
+               manager.stop();
+            } catch (Exception e) {
+               logger.debug("Caught error while stopping a policy manager: ", e);
+               throw e;
+            }
+         }
+      }
+   }
+
+   /**
+    * Shutdown this bridge instance if not already shutdown (this is a terminal operation).
+    *
+    * @throws ActiveMQException if an error occurs during the shutdown process.
+    */
+   public final synchronized void shutdown() throws ActiveMQException {
+      if (state.ordinal() < State.SHUTDOWN.ordinal()) {
+         state = State.SHUTDOWN;
+
+         try {
+            AMQPBridgeManagementSupport.unregisterBridgeManager(this);
+         } catch (Exception e) {
+            logger.warn("Ignoring error while attempting to unregister bridge with management services");
+         }
+
+         for (AMQPBridgePolicyManager manager : policyManagers) {
+            manager.shutdown();
          }
       }
    }
@@ -135,6 +207,13 @@ public class AMQPBridgeManager {
     */
    public String getName() {
       return name;
+   }
+
+   /**
+    * @return the metrics instance tied to this bridge instance.
+    */
+   public AMQPBridgeMetrics getMetrics() {
+      return metrics;
    }
 
    /**
@@ -163,26 +242,33 @@ public class AMQPBridgeManager {
    }
 
    /**
-    * @return is this bridge instance started (may not be connected yet).
+    * @return <code>true</code> if the bridge manager has been started.
     */
    public boolean isStarted() {
-      return started;
+      return state == State.STARTED;
+   }
+
+   /**
+    * @return <code>true</code> if the bridge manager has been marked as connected.
+    */
+   public boolean isConnected() {
+      return connected;
    }
 
    /**
     * Called by the parent broker connection when the connection has failed and this AMQP bridge
     * should tear down any active resources and await a reconnect if one is allowed.
     *
-    * @throws ActiveMQException if an error occurs processing the connection dropped event
+    * @throws ActiveMQException if an error occurs processing the connection interrupted event
     */
-   public synchronized void handleConnectionDropped() throws ActiveMQException {
+   public synchronized void connectionInterrupted() throws ActiveMQException {
       final AtomicReference<Exception> errorCaught = new AtomicReference<>();
 
       policyManagers.forEach(manager -> {
          try {
-            manager.connectionDropped();
+            manager.connectionInterrupted();
          } catch (Exception ex) {
-            logger.trace("Exception caught on from address policy manager connection state update: ", ex);
+            logger.trace("Exception caught on from a policy manager connection state update: ", ex);
             errorCaught.compareAndExchange(null, ex);
          }
       });
@@ -208,13 +294,13 @@ public class AMQPBridgeManager {
     *
     * @throws ActiveMQException if an error occurs processing the connection restored event
     */
-   public synchronized void handleConnectionRestored(AMQPConnectionContext connection, AMQPSessionContext session) throws ActiveMQException {
+   public synchronized void connectionRestored(AMQPConnectionContext connection, AMQPSessionContext session) throws ActiveMQException {
       this.configuration = new AMQPBridgeConfiguration(connection, properties);
 
       for (AMQPBridgePolicyManager manager : policyManagers) {
          try {
             manager.connectionRestored(session, configuration);
-         } catch (ActiveMQException e) {
+         } catch (Exception e) {
             logger.debug("Caught error while restoring connection state to policy manager: ", e);
             throw e;
          }
@@ -280,5 +366,11 @@ public class AMQPBridgeManager {
       }
 
       return false;
+   }
+
+   private void failIfShutdown() throws ActiveMQIllegalStateException {
+      if (state == State.SHUTDOWN) {
+         throw new ActiveMQIllegalStateException("The bridge manager instance has been shutdown");
+      }
    }
 }

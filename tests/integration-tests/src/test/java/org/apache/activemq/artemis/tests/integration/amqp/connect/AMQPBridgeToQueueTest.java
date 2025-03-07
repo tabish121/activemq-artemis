@@ -20,8 +20,12 @@ import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridg
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.LINK_RECOVERY_INITIAL_DELAY;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.MAX_LINK_RECOVERY_ATTEMPTS;
 import static org.apache.activemq.artemis.protocol.amqp.connect.bridge.AMQPBridgeConstants.PRESETTLE_SEND_MODE;
+import static org.apache.activemq.artemis.protocol.amqp.proton.AMQPTunneledMessageConstants.AMQP_TUNNELED_CORE_MESSAGE_FORMAT;
+import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.CORE_MESSAGE_TUNNELING_SUPPORT;
+import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.TUNNEL_CORE_MESSAGES;
 import static org.hamcrest.CoreMatchers.allOf;
 import static org.hamcrest.CoreMatchers.containsString;
+import static org.hamcrest.CoreMatchers.notNullValue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.lang.invoke.MethodHandles;
@@ -834,12 +838,6 @@ class AMQPBridgeToQueueTest  extends AmqpClientTestSupport {
                                                          .setAutoCreated(false));
 
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
-
-         // Add the alternate queue again which should trigger new attempt
-         server.createQueue(QueueConfiguration.of("another").setRoutingType(RoutingType.ANYCAST)
-                                                            .setAddress("another")
-                                                            .setAutoCreated(false));
-
          peer.expectAttach().ofSender()
                             .withTarget().withAddress("another").also()
                             .withSource().withAddress("another::another").also()
@@ -850,12 +848,15 @@ class AMQPBridgeToQueueTest  extends AmqpClientTestSupport {
                                             containsString(server.getNodeID().toString())))
                             .respond();
 
-         // Remove and add the queue again which should trigger new attempt
-         server.destroyQueue(SimpleString.of("test"), null, true);
-         server.createQueue(QueueConfiguration.of("test").setRoutingType(RoutingType.ANYCAST)
-                                                         .setAddress("test")
-                                                         .setAutoCreated(false));
+         // Add the alternate queue again which should trigger new attempt
+         server.createQueue(QueueConfiguration.of("another").setRoutingType(RoutingType.ANYCAST)
+                                                            .setAddress("another")
+                                                            .setAutoCreated(false));
 
+         // Remove and later add the queue again which should trigger new attempt
+         server.destroyQueue(SimpleString.of("test"), null, true);
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
          peer.expectAttach().ofSender()
                             .withTarget().withAddress("test").also()
                             .withSource().withAddress("test::test").also()
@@ -865,6 +866,12 @@ class AMQPBridgeToQueueTest  extends AmqpClientTestSupport {
                                             containsString("amqp-bridge"),
                                             containsString(server.getNodeID().toString())))
                             .respond();
+
+         server.createQueue(QueueConfiguration.of("test").setRoutingType(RoutingType.ANYCAST)
+                                                         .setAddress("test")
+                                                         .setAutoCreated(false));
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
 
          Wait.assertTrue(() -> server.addressQuery(SimpleString.of("test")).isExists());
          Wait.assertTrue(() -> server.bindingQuery(SimpleString.of("test")).getQueueNames().size() > 0);
@@ -938,6 +945,133 @@ class AMQPBridgeToQueueTest  extends AmqpClientTestSupport {
          Wait.assertTrue(() -> server.queueQuery(SimpleString.of("test")).isExists());
 
          peer.waitForScriptToComplete(500, TimeUnit.SECONDS);
+         peer.close();
+      }
+   }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeSendCoreMessageTunneleInAMQPMessageWhenSupported() throws Exception {
+      doTestBridgeSendMessagesAccordingToTunnelingState(true, true);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeSendCoreMessageConvertedToAMQPMessageWhenTunnelNotSupported() throws Exception {
+      doTestBridgeSendMessagesAccordingToTunnelingState(true, false);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testBridgeSendCoreMessageConvertedToAMQPMessageWhenConfigurationDisabledTunneling() throws Exception {
+      doTestBridgeSendMessagesAccordingToTunnelingState(false, true);
+   }
+
+   public void doTestBridgeSendMessagesAccordingToTunnelingState(boolean enabled, boolean receiverSupport) throws Exception {
+      try (ProtonTestServer peer = new ProtonTestServer()) {
+         peer.expectSASLAnonymousConnect();
+         peer.expectOpen().respond();
+         peer.expectBegin().respond();
+         peer.start();
+
+         final URI remoteURI = peer.getServerURI();
+         logger.info("Test started, peer listening on: {}", remoteURI);
+
+         final AMQPBridgeQueuePolicyElement sendToQueue = new AMQPBridgeQueuePolicyElement();
+         sendToQueue.setName("queue-policy");
+         sendToQueue.addToIncludes("#", getTestName());
+         sendToQueue.addProperty(TUNNEL_CORE_MESSAGES, Boolean.toString(enabled));
+
+         final AMQPBridgeBrokerConnectionElement element = new AMQPBridgeBrokerConnectionElement();
+         element.setName(getTestName());
+         element.addBridgeToQueuePolicy(sendToQueue);
+
+         final AMQPBrokerConnectConfiguration amqpConnection =
+            new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
+         amqpConnection.setReconnectAttempts(0);// No reconnects
+         amqpConnection.addElement(element);
+
+         server.getConfiguration().addAMQPConnection(amqpConnection);
+         server.start();
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         if (receiverSupport && enabled) {
+            peer.expectAttach().ofSender()
+                               .withTarget().withAddress(getTestName()).also()
+                               .withSource().withAddress(getTestName() + "::" + getTestName()).also()
+                               .withDesiredCapabilities(CORE_MESSAGE_TUNNELING_SUPPORT.toString())
+                               .withName(allOf(containsString(getTestName()),
+                                               containsString("queue-sender"),
+                                               containsString("amqp-bridge"),
+                                               containsString(server.getNodeID().toString())))
+                               .respond()
+                               .withOfferedCapabilities(CORE_MESSAGE_TUNNELING_SUPPORT.toString());
+         } else if (enabled) {
+            peer.expectAttach().ofSender()
+                               .withTarget().withAddress(getTestName()).also()
+                               .withSource().withAddress(getTestName() + "::" + getTestName()).also()
+                               .withDesiredCapabilities(CORE_MESSAGE_TUNNELING_SUPPORT.toString())
+                               .withName(allOf(containsString(getTestName()),
+                                               containsString("queue-sender"),
+                                               containsString("amqp-bridge"),
+                                               containsString(server.getNodeID().toString())))
+                               .respond();
+         } else {
+            peer.expectAttach().ofSender()
+                               .withTarget().withAddress(getTestName()).also()
+                               .withSource().withAddress(getTestName() + "::" + getTestName()).also()
+                               .withName(allOf(containsString(getTestName()),
+                                               containsString("queue-sender"),
+                                               containsString("amqp-bridge"),
+                                               containsString(server.getNodeID().toString())))
+                               .respond();
+         }
+         peer.remoteFlow().withLinkCredit(1).queue();
+
+         server.createQueue(QueueConfiguration.of(getTestName()).setRoutingType(RoutingType.ANYCAST)
+                                                                .setAddress(getTestName())
+                                                                .setAutoCreated(false));
+
+         Wait.assertTrue(() -> server.addressQuery(SimpleString.of(getTestName())).isExists());
+         Wait.assertTrue(() -> server.bindingQuery(SimpleString.of(getTestName())).getQueueNames().size() > 0);
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+
+         final ConnectionFactory factory = CFUtil.createConnectionFactory("CORE", "tcp://localhost:" + AMQP_PORT);
+
+         // Producer connect should create the address and initiate the bridge sender attach
+         try (Connection connection = factory.createConnection()) {
+            final Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE);
+            final MessageProducer producer = session.createProducer(session.createQueue(getTestName()));
+
+            // Await bridge sender attach.
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+
+            if (enabled && receiverSupport) {
+               peer.expectTransfer().withMessageFormat(AMQP_TUNNELED_CORE_MESSAGE_FORMAT)
+                                    .withMessage().withData(notNullValue()).also()
+                                    .accept();
+            } else {
+               peer.expectTransfer().withMessageFormat(0)
+                                    .withMessage().withHeader().also()
+                                                  .withMessageAnnotations().also()
+                                                  .withApplicationProperties().also()
+                                                  .withProperties().also()
+                                                  .withValue("Hello")
+                                    .and()
+                                    .accept();
+            }
+
+            connection.start();
+
+            Wait.assertTrue(() -> server.addressQuery(SimpleString.of(getTestName())).isExists());
+            Wait.assertTrue(() -> server.bindingQuery(SimpleString.of(getTestName())).getQueueNames().size() > 0);
+
+            producer.send(session.createTextMessage("Hello"));
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         }
+
          peer.close();
       }
    }

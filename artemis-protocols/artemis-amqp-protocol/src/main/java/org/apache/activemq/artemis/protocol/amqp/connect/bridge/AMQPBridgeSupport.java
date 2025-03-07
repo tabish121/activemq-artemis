@@ -55,7 +55,6 @@ public class AMQPBridgeSupport {
     *
     * @return a configured AMQP bridge manager instance for use by the parent broker connection.
     */
-   @SuppressWarnings("unchecked")
    public static AMQPBridgeManager createManager(AMQPBrokerConnection connection, AMQPBridgeBrokerConnectionElement bridgeElement) {
       final WildcardConfiguration wildcardConfiguration;
 
@@ -65,10 +64,10 @@ public class AMQPBridgeSupport {
          wildcardConfiguration = DEFAULT_WILDCARD_CONFIGURATION;
       }
 
-      Set<AMQPBridgeAddressPolicy> fromAddressPolicies = Collections.EMPTY_SET;
-      Set<AMQPBridgeAddressPolicy> toAddressPolicies = Collections.EMPTY_SET;
-      Set<AMQPBridgeQueuePolicy> fromQueuePolicies = Collections.EMPTY_SET;
-      Set<AMQPBridgeQueuePolicy> toQueuePolicies = Collections.EMPTY_SET;
+      Set<AMQPBridgeAddressPolicy> fromAddressPolicies = Collections.emptySet();
+      Set<AMQPBridgeAddressPolicy> toAddressPolicies = Collections.emptySet();
+      Set<AMQPBridgeQueuePolicy> fromQueuePolicies = Collections.emptySet();
+      Set<AMQPBridgeQueuePolicy> toQueuePolicies = Collections.emptySet();
 
       final Set<AMQPBridgeAddressPolicyElement> fromAddress = bridgeElement.getBridgeFromAddressPolicies();
       if (!fromAddress.isEmpty()) {
@@ -129,7 +128,6 @@ public class AMQPBridgeSupport {
     *
     * @return a new queue match and handling policy for use in the broker connection.
     */
-   @SuppressWarnings("unchecked")
    public static AMQPBridgeQueuePolicy createBridgeQueuePolicy(AMQPBridgeQueuePolicyElement element, WildcardConfiguration wildcards) {
       final Set<Map.Entry<String, String>> includes;
       final Set<Map.Entry<String, String>> excludes;
@@ -143,7 +141,7 @@ public class AMQPBridgeSupport {
          element.getIncludes().forEach(queueMatch ->
             includes.add(new AbstractMap.SimpleImmutableEntry<String, String>(queueMatch.getAddressMatch(), queueMatch.getQueueMatch())));
       } else {
-         includes = Collections.EMPTY_SET;
+         includes = Collections.emptySet();
       }
 
       if (element.getExcludes() != null && !element.getExcludes().isEmpty()) {
@@ -152,7 +150,7 @@ public class AMQPBridgeSupport {
          element.getExcludes().forEach(queueMatch ->
             excludes.add(new AbstractMap.SimpleImmutableEntry<String, String>(queueMatch.getAddressMatch(), queueMatch.getQueueMatch())));
       } else {
-         excludes = Collections.EMPTY_SET;
+         excludes = Collections.emptySet();
       }
 
       // We translate from broker configuration to actual implementation to avoid any coupling here
@@ -187,7 +185,6 @@ public class AMQPBridgeSupport {
     *
     * @return a new address match and handling policy for use in the broker connection.
     */
-   @SuppressWarnings("unchecked")
    public static AMQPBridgeAddressPolicy createBridgeAddressPolicy(AMQPBridgeAddressPolicyElement element, WildcardConfiguration wildcards) {
       final Set<String> includes;
       final Set<String> excludes;
@@ -197,7 +194,7 @@ public class AMQPBridgeSupport {
 
          element.getIncludes().forEach(addressMatch -> includes.add(addressMatch.getAddressMatch()));
       } else {
-         includes = Collections.EMPTY_SET;
+         includes = Collections.emptySet();
       }
 
       if (element.getExcludes() != null && !element.getExcludes().isEmpty()) {
@@ -205,7 +202,7 @@ public class AMQPBridgeSupport {
 
          element.getExcludes().forEach(addressMatch -> excludes.add(addressMatch.getAddressMatch()));
       } else {
-         excludes = Collections.EMPTY_SET;
+         excludes = Collections.emptySet();
       }
 
       // We translate from broker configuration to actual implementation to avoid any coupling here
@@ -229,10 +226,9 @@ public class AMQPBridgeSupport {
       return policy;
    }
 
-   @SuppressWarnings("unchecked")
    private static Collection<Symbol> toSymbolCollection(String[] symbols) {
       if (symbols == null || symbols.length == 0) {
-         return Collections.EMPTY_SET;
+         return Collections.emptySet();
       }
 
       final Set<Symbol> collection = new HashSet<>(symbols.length);
@@ -245,6 +241,6 @@ public class AMQPBridgeSupport {
          collection.add(Symbol.valueOf(symbol));
       }
 
-      return collection.isEmpty() ? Collections.EMPTY_SET : collection;
+      return collection.isEmpty() ? Collections.emptySet() : collection;
    }
 }
