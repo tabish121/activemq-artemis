@@ -21,6 +21,7 @@ import java.util.List;
 import java.util.Map;
 
 import org.apache.activemq.artemis.core.server.transformer.Transformer;
+import org.apache.activemq.artemis.protocol.amqp.federation.FederationConsumerInfo;
 import org.apache.qpid.proton.amqp.Symbol;
 
 /**
@@ -317,5 +318,12 @@ public final class AMQPFederationConstants {
     * remote policy as links or connections are torn down and re-estabilished.
     */
    public static final Symbol FEDERATION_POLICY_NAME = Symbol.valueOf("federationPolicyName");
+
+   /**
+    * Property name used to attach a {@link FederationConsumerInfo} that uniquely defines the federation consumer that
+    * will be used to federate messages from a remote broker back to this broker. When a server consumer closes or is
+    * removed the federation policy manager can recover this value and cleanup associated state data.
+    */
+   public static final String FEDERATION_CONSUMER_INFO = "amqpFederationConsumerInfo";
 
 }

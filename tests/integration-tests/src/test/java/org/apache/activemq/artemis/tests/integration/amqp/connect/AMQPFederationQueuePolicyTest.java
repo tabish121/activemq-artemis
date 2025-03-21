@@ -2551,7 +2551,7 @@ public class AMQPFederationQueuePolicyTest extends AmqpClientTestSupport {
                                                            containsString("test::test"),
                                                            containsString("queue-receiver"),
                                                            containsString(server.getNodeID().toString())))
-                                           .withProperty(FEDERATION_RECEIVER_PRIORITY.toString(), DEFAULT_QUEUE_RECEIVER_PRIORITY_ADJUSTMENT - 1).respond()
+                                           .withProperty(FEDERATION_RECEIVER_PRIORITY.toString(), DEFAULT_QUEUE_RECEIVER_PRIORITY_ADJUSTMENT).respond()
                                            .withOfferedCapabilities(FEDERATION_QUEUE_RECEIVER.toString());
          // Should get a flow but if the link goes away quick enough the broker won't get to this before detaching.
          target.expectFlow().withLinkCredit(1000).optional();
