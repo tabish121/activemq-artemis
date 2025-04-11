@@ -1495,4 +1495,8 @@ public interface ActiveMQServerLogger {
 
    @LogMessage(id = 224143, value = "Bridge {} failed to send {}: {} {}", level = LogMessage.Level.WARN)
    void bridgeFailedToSend(String bridgeName, String message, String exceptionName, String exceptionMessage);
+
+   @LogMessage(id = 224144, value = "Error looking up bindings for address {}.", level = LogMessage.Level.WARN)
+   void bridgeBindingsLookupError(SimpleString address, Throwable e);
+
 }
