@@ -492,10 +492,14 @@ public class AMQConsumer {
          if (message.containsProperty(ClientConsumerImpl.FORCED_DELIVERY_MESSAGE)) {
             if (next >= 0) {
                if (timeout <= 0) {
+                  // Non-timed pull we can reduce credit now
+                  currentWindow.decrementAndGet();
                   latch.countDown();
                } else {
                   messagePullFuture = scheduledPool.schedule(() -> {
                      if (next >= 0) {
+                        // Timed pull did not get a message before the timeout, reduce credit
+                        currentWindow.decrementAndGet();
                         handleDeliverNullDispatch();
                      }
                   }, timeout, TimeUnit.MILLISECONDS);
