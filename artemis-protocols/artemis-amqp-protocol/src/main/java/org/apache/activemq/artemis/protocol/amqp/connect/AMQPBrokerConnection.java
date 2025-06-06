@@ -91,6 +91,7 @@ import org.apache.activemq.artemis.protocol.amqp.proton.MessageWriter;
 import org.apache.activemq.artemis.protocol.amqp.proton.ProtonServerReceiverContext;
 import org.apache.activemq.artemis.protocol.amqp.proton.ProtonServerSenderContext;
 import org.apache.activemq.artemis.protocol.amqp.proton.SenderController;
+import org.apache.activemq.artemis.protocol.amqp.proton.handler.ExtCapability;
 import org.apache.activemq.artemis.protocol.amqp.sasl.ClientSASL;
 import org.apache.activemq.artemis.protocol.amqp.sasl.ClientSASLFactory;
 import org.apache.activemq.artemis.protocol.amqp.sasl.scram.SCRAMClientSASL;
@@ -119,6 +120,7 @@ import static org.apache.activemq.artemis.protocol.amqp.connect.AMQPBrokerConnec
 import static org.apache.activemq.artemis.protocol.amqp.connect.AMQPBrokerConnectionConstants.CONNECTION_NAME;
 import static org.apache.activemq.artemis.protocol.amqp.connect.AMQPBrokerConnectionConstants.NODE_ID;
 import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.AMQP_LINK_INITIALIZER_KEY;
+import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.SHARED_SUBS;
 import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.verifyCapabilities;
 import static org.apache.activemq.artemis.protocol.amqp.proton.AmqpSupport.verifyOfferedCapabilities;
 
@@ -501,8 +503,10 @@ public class AMQPBrokerConnection implements ClientConnectionLifeCycleListener, 
 
          brokerConnectionProperties.put(BROKER_CONNECTION_INFO, brokerConnectionInfo);
 
+         final Symbol[] brokerDesiredCapabilities = bridgeManagers == null ? null : new Symbol[] {SHARED_SUBS};
+
          NettyConnectorCloseHandler connectorCloseHandler = new NettyConnectorCloseHandler(connector, connectExecutor);
-         ConnectionEntry entry = protonProtocolManager.createOutgoingConnectionEntry(connection, saslFactory, brokerConnectionProperties);
+         ConnectionEntry entry = protonProtocolManager.createOutgoingConnectionEntry(connection, saslFactory, brokerConnectionProperties, ExtCapability.getCapabilities(), brokerDesiredCapabilities);
          server.getRemotingService().addConnectionEntry(connection, entry);
          protonRemotingConnection = (ActiveMQProtonRemotingConnection) entry.connection;
          protonRemotingConnection.getAmqpConnection().addLinkRemoteCloseListener(getName(), this::linkClosed);
@@ -515,6 +519,18 @@ public class AMQPBrokerConnection implements ClientConnectionLifeCycleListener, 
          sessionContext = protonRemotingConnection.getAmqpConnection().getSessionExtension(session);
 
          protonRemotingConnection.getAmqpConnection().runLater(() -> {
+            protonRemotingConnection.getAmqpConnection().addRemoteOpenedListener(c -> {
+               try {
+                  // Starting the Bridge triggers rebuild of AMQP sender and receiver links based on current broker state.
+                  // This requires in some cases knowing the remote offered capabilities which can't be tested until after
+                  // the remote sends its Open performative carrying those.
+                  if (bridgeManagers != null) {
+                     bridgeManagers.connectionRestored(sessionContext);
+                  }
+               } catch (Throwable e) {
+                  error(e);
+               }
+            });
             protonRemotingConnection.getAmqpConnection().open();
             session.open();
             protonRemotingConnection.getAmqpConnection().flush();
@@ -562,18 +578,13 @@ public class AMQPBrokerConnection implements ClientConnectionLifeCycleListener, 
                   // Signal the Federation instance to start a rebuild of federation links
                   // based on current broker state.
                   brokerFederation.connectionRestored(protonRemotingConnection.getAmqpConnection(), sessionContext);
-               } else if (connectionElement.getType() == AMQPBrokerConnectionAddressType.BRIDGE) {
-                  // Starting the Bridge triggers rebuild of AMQP sender and receiver links based on current broker state.
-                  if (bridgeManagers != null) {
-                     bridgeManagers.connectionRestored(sessionContext);
-                  }
                }
             }
          }
 
          protonRemotingConnection.getAmqpConnection().flush();
 
-         connectionManager.connected(connection, this);
+         connectionManager.connected(connection, AMQPBrokerConnection.this);
 
          ActiveMQAMQPProtocolLogger.LOGGER.successReconnect(brokerConnectConfiguration.getName(), host + ":" + port, lastRetryCounter);
 
