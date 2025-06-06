@@ -305,9 +305,9 @@ public class AMQConsumer {
          dispatch = OpenWireMessageConverter.createMessageDispatch(reference, message, session.wireFormat(), this, session.getCoreServer().getNodeManager().getUUID(), deliveredSequenceId.getAndIncrement());
          int size = dispatch.getMessage().getSize();
          reference.setProtocolData(MessageId.class, dispatch.getMessage().getMessageId());
-         session.deliverMessage(dispatch);
          // Prevent races with other updates that can lead to credit going negative and starving consumers.
          currentWindow.updateAndGet(i -> i > 0 ? i - 1 : i);
+         session.deliverMessage(dispatch);
          return size;
       } catch (Throwable t) {
          logger.warn("Error during message dispatch", t);
