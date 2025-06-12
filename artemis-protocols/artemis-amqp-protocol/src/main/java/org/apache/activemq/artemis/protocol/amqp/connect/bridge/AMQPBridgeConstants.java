@@ -136,6 +136,25 @@ public final class AMQPBridgeConstants {
    public static final boolean DEFAULT_DISABLE_RECEIVER_DEMAND_TRACKING = false;
 
    /**
+    * Configuration property that controls if a bridge from address receiver that has been configured
+    * to use durable subscriptions will prefer to use a shared durable subscription if the remote peer
+    * indicates in its connection capabilities that it supports them. Using a shared subscription can
+    * avoid a rare edge case race on rapid attach and re-attach cycles due to demand coming and going
+    * rapidly which leads to a stuck consumer. Enabling this on configurations that previously did not
+    * have this option or had it disabled could lead to orphaning a previous subscription so care should
+    * be taken when enabling this option.
+    */
+   public static final String PREFER_SHARED_DURABLE_SUBSCRIPTIONS = "preferSharedDurableSubscriptions";
+
+   /**
+    * Default value for whether a bridge from address receiver that has been told to use durable subscriptions
+    * should prefer to use a shared durable address subscriptions or a standard JMS style non-shared durable
+    * subscription. We default to false to ensure that older installations that upgrade don't suddenly leave
+    * orphaned subscriptions from previous bridge address receivers.
+    */
+   public static final boolean DEFAULT_PERFER_SHARED_DURABLE_SUBSCRIPTIONS = false;
+
+   /**
     * Link Property added to the receiver properties when opening an AMQP bridge address or queue consumer
     * that indicates the consumer priority that should be used when creating the remote consumer. The
     * value assign to the properties {@link Map} is a signed integer value. This value is set on each bridge
