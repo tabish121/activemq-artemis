@@ -3374,20 +3374,38 @@ public class ActiveMQServerImpl implements ActiveMQServer {
       if (configurationFileRefreshPeriod > 0) {
          this.reloadManager = new ReloadManagerImpl(getScheduledPool(), executorFactory.getExecutor(), configurationFileRefreshPeriod);
 
-         if (configuration.getConfigurationUrl() != null && getScheduledPool() != null) {
-            final URL configUrl = configuration.getConfigurationUrl();
-            ReloadCallback xmlConfigReload = uri -> {
-               // ignore the argument from the callback such that we can respond
-               // to property file locations with a full reload
-               reloadConfigurationFile(configUrl);
-            };
-            reloadManager.addCallback(configUrl, xmlConfigReload);
+         if (getScheduledPool() != null) {
+            final String propsLocations = configuration.resolvePropertiesSources(propertiesFileUrl);
 
-            // watch properties and reload xml config
-            String propsLocations = configuration.resolvePropertiesSources(propertiesFileUrl);
-            if (propsLocations != null) {
-               for (String fileUrl : propsLocations.split(",")) {
-                  reloadManager.addCallback(new File(fileUrl).toURI().toURL(), xmlConfigReload);
+            if (configuration.getConfigurationUrl() != null) {
+               final URL configUrl = configuration.getConfigurationUrl();
+               final ReloadCallback xmlConfigReload = uri -> {
+                  // ignore the argument from the callback such that we can respond
+                  // to property file locations with a full reload
+                  reloadConfigurationFile(configUrl);
+               };
+               reloadManager.addCallback(configUrl, xmlConfigReload);
+
+               // Watch each properties file and reload XML configuration and all properties files as a whole
+               // on each update to allow for reset to defaults and rebuild from values in each file.
+               if (propsLocations != null) {
+                  for (String fileUrl : propsLocations.split(",")) {
+                     reloadManager.addCallback(new File(fileUrl).toURI().toURL(), xmlConfigReload);
+                  }
+               }
+            } else if (propsLocations != null) {
+               final ReloadCallback propertiesOnlyConfigReload = uri -> {
+                  // Reload as one operation from all the configuration files since we will
+                  // reset configuration elements that are able to be reloaded each time.
+                  reloadPropertiesOnlyConfiguration();
+               };
+
+               // Watch each properties file and reload properties files in one operation on each update to allow
+               // for reset to defaults and rebuild from values in each file.
+               if (propsLocations != null) {
+                  for (String fileUrl : propsLocations.split(",")) {
+                     reloadManager.addCallback(new File(fileUrl).toURI().toURL(), propertiesOnlyConfigReload);
+                  }
                }
             }
          }
@@ -4616,16 +4634,29 @@ public class ActiveMQServerImpl implements ActiveMQServer {
       Configuration config = new FileConfigurationParser().parseMainConfig(uri.openStream());
       LegacyJMSConfiguration legacyJMSConfiguration = new LegacyJMSConfiguration(config);
       legacyJMSConfiguration.parseConfiguration(uri.openStream());
-      configuration.setSecurityRoles(config.getSecurityRoles());
-      configuration.setAddressSettings(config.getAddressSettings());
-      configuration.setDivertConfigurations(config.getDivertConfigurations());
-      configuration.setAddressConfigurations(config.getAddressConfigurations());
-      configuration.setQueueConfigs(config.getQueueConfigs());
-      configuration.setBridgeConfigurations(config.getBridgeConfigurations());
-      configuration.setConnectorConfigurations(config.getConnectorConfigurations());
-      configuration.setAcceptorConfigurations(config.getAcceptorConfigurations());
-      configuration.setAMQPConnectionConfigurations(config.getAMQPConnection());
-      configuration.setPurgePageFolders(config.isPurgePageFolders());
+
+      doReloadUpdatableConfiguration(config);
+   }
+
+   private void reloadPropertiesOnlyConfiguration() throws Exception {
+      doReloadUpdatableConfiguration(configuration);
+   }
+
+   private void doReloadUpdatableConfiguration(Configuration config) throws Exception {
+      final Configuration defaults = new ConfigurationImpl();
+
+      // Set from configuration defaults and allow properties file reload to update
+      configuration.setSecurityRoles(defaults.getSecurityRoles());
+      configuration.setAddressSettings(defaults.getAddressSettings());
+      configuration.setDivertConfigurations(defaults.getDivertConfigurations());
+      configuration.setAddressConfigurations(defaults.getAddressConfigurations());
+      configuration.setQueueConfigs(defaults.getQueueConfigs());
+      configuration.setBridgeConfigurations(defaults.getBridgeConfigurations());
+      configuration.setConnectorConfigurations(defaults.getConnectorConfigurations());
+      configuration.setAcceptorConfigurations(defaults.getAcceptorConfigurations());
+      configuration.setAMQPConnectionConfigurations(defaults.getAMQPConnection());
+      configuration.setPurgePageFolders(defaults.isPurgePageFolders());
+
       configurationReloadDeployed.set(false);
       if (isActive()) {
          configuration.parseProperties(propertiesFileUrl);

@@ -1867,6 +1867,122 @@ public class RedeployTest extends ActiveMQTestBase {
       }
    }
 
+   @Test
+   public void testReplacedAconfigurationcceptorWatchesForTLSPropertiesUpdatesAfterReloadNoXMLConfiguration() throws Exception {
+      Path brokerProperties = getTestDirfile().toPath().resolve("broker.properties");
+
+      // reference Key Store from temporary location that we can update later
+      File keyStoreToReload = new File(getTestDirfile(), "server-ks.p12");
+      copyRecursive(new File(this.getClass().getClassLoader().getResource("unknown-server-keystore.p12").getFile()), keyStoreToReload);
+
+      final Properties properties = new ConfigurationImpl.InsertionOrderedProperties();
+
+      properties.put("acceptorConfigurations.tcp1.factoryClassName", NETTY_ACCEPTOR_FACTORY);
+      properties.put("acceptorConfigurations.tcp1.params.host", "127.0.0.1");
+      properties.put("acceptorConfigurations.tcp1.params.port", "61617");
+      properties.put("acceptorConfigurations.tcp1.params." + TransportConstants.SSL_AUTO_RELOAD_PROP_NAME, "true");
+      properties.put("acceptorConfigurations.tcp1.params." + TransportConstants.SSL_ENABLED_PROP_NAME, "true");
+      properties.put("acceptorConfigurations.tcp1.params." + TransportConstants.KEYSTORE_PATH_PROP_NAME, keyStoreToReload.getAbsolutePath());
+      properties.put("acceptorConfigurations.tcp1.params." + TransportConstants.KEYSTORE_PASSWORD_PROP_NAME, "securepass");
+
+      Writer propertiesWriter = Files.newBufferedWriter(brokerProperties, StandardOpenOption.WRITE,
+                                                                          StandardOpenOption.CREATE,
+                                                                          StandardOpenOption.TRUNCATE_EXISTING);
+      try {
+         properties.store(propertiesWriter, null);
+      } finally {
+         propertiesWriter.flush();
+         propertiesWriter.close();
+      }
+
+      final MBeanServer mBeanServer = MBeanServerFactory.createMBeanServer();
+      runAfter(() -> MBeanServerFactory.releaseMBeanServer(mBeanServer));
+
+      final Configuration configuration = new ConfigurationImpl();
+      configuration.setConfigurationFileRefreshPeriod(100);
+      configuration.setSecurityEnabled(false);
+      configuration.setPersistenceEnabled(false);
+
+      EmbeddedActiveMQ embeddedActiveMQ = new EmbeddedActiveMQ();
+      embeddedActiveMQ.setPropertiesResourcePath(brokerProperties.toString());
+      embeddedActiveMQ.setMbeanServer(mBeanServer);
+      embeddedActiveMQ.setConfiguration(configuration);
+      embeddedActiveMQ.start();
+
+      final ReusableLatch latch = new ReusableLatch(1);
+      final Runnable tick = latch::countDown;
+
+      embeddedActiveMQ.getActiveMQServer().getReloadManager().setTick(tick);
+
+      try {
+         latch.await(10, TimeUnit.SECONDS);
+
+         final TransportConfiguration acceptor = findInConfiguration("tcp1", embeddedActiveMQ.getActiveMQServer().getConfiguration());
+
+         assertNotNull(acceptor);
+         assertEquals("127.0.0.1", acceptor.getParams().get(TransportConstants.HOST_PROP_NAME));
+         assertEquals("61617", acceptor.getParams().get(TransportConstants.PORT_PROP_NAME));
+
+         String url = "tcp://127.0.0.1:61616?sslEnabled=true;trustStorePath=server-ca-truststore.p12;trustStorePassword=securepass";
+         ServerLocator locator = addServerLocator(ActiveMQClient.createServerLocator(url)).setCallTimeout(3000);
+
+         try {
+            createSessionFactory(locator);
+            fail("Creating session here should fail due to SSL handshake problems.");
+         } catch (Exception ignored) {
+         }
+
+         // Update the broker properties file with a new acceptor on the correct port to trigger configuration
+         // reload. This should retain the ability to watch the TLS resources for updates and after the reload
+         // the test will update the key store to one that allows the client to connect and we should see the
+         // client succeed eventually.
+         properties.clear();
+         properties.put("acceptorConfigurations.tcp2.factoryClassName", NETTY_ACCEPTOR_FACTORY);
+         properties.put("acceptorConfigurations.tcp2.params.host", "127.0.0.1");
+         properties.put("acceptorConfigurations.tcp2.params.port", "61616");
+         properties.put("acceptorConfigurations.tcp2.params." + TransportConstants.SSL_AUTO_RELOAD_PROP_NAME, "true");
+         properties.put("acceptorConfigurations.tcp2.params." + TransportConstants.SSL_ENABLED_PROP_NAME, "true");
+         properties.put("acceptorConfigurations.tcp2.params." + TransportConstants.KEYSTORE_PATH_PROP_NAME, keyStoreToReload.getAbsolutePath());
+         properties.put("acceptorConfigurations.tcp2.params." + TransportConstants.KEYSTORE_PASSWORD_PROP_NAME, "securepass");
+
+         propertiesWriter = Files.newBufferedWriter(brokerProperties, StandardOpenOption.WRITE,
+                                                                      StandardOpenOption.TRUNCATE_EXISTING);
+         try {
+            properties.store(propertiesWriter, null);
+         } finally {
+            propertiesWriter.flush();
+            propertiesWriter.close();
+         }
+
+         latch.setCount(1);
+         embeddedActiveMQ.getActiveMQServer().getReloadManager().setTick(tick);
+         latch.await(10, TimeUnit.SECONDS);
+
+         // Old acceptor should be null but new one should be present and should be watching for updates
+         assertNull(findInConfiguration("tcp1", embeddedActiveMQ.getActiveMQServer().getConfiguration()));
+         final TransportConfiguration updatedAcceptor = findInConfiguration("tcp2", embeddedActiveMQ.getActiveMQServer().getConfiguration());
+
+         assertNotNull(updatedAcceptor);
+         assertEquals("127.0.0.1", updatedAcceptor.getParams().get(TransportConstants.HOST_PROP_NAME));
+         assertEquals("61616", updatedAcceptor.getParams().get(TransportConstants.PORT_PROP_NAME));
+
+         // update the server side key store with one that actually works with the client trust store
+         copyRecursive(new File(this.getClass().getClassLoader().getResource("server-keystore.p12").getFile()), keyStoreToReload);
+
+         // expect success after auto reload, which we wait for
+         Wait.assertTrue(() -> {
+            try {
+               addSessionFactory(createSessionFactory(locator));
+               return true;
+            } catch (Throwable ignored) {
+            }
+            return false;
+         }, 5000, 100);
+      } finally {
+         embeddedActiveMQ.stop();
+      }
+   }
+
    private TransportConfiguration findInConfiguration(String acceptorName, Configuration configuration) {
       final Set<TransportConfiguration> acceptors = configuration.getAcceptorConfigurations();
 
