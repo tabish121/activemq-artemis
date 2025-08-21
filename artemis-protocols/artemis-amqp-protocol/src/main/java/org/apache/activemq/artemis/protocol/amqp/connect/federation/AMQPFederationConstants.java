@@ -175,6 +175,17 @@ public final class AMQPFederationConstants {
    public static final String IGNORE_QUEUE_CONSUMER_PRIORITIES = "ignoreQueueConsumerPriorities";
 
    /**
+    * Configuration property for how a federation receiver should respond to delivery errors indicating that an address is
+    * full and cannot accept messages at this time. By default we want to send Modified outcomes with the delivery failed
+    * value set to true such that the remote will delivery the message again after incrementing the delivery count of
+    * the message. The behavior that the base AMQP receiver uses is to reject the message which would result in federated
+    * messages getting dropped or sent to a DLQ when the target cannot accept them due to space issues. If the user prefers
+    * the rejected outcome this option should be set on the connection or policy properties level with a value of
+    * <code>false</code>.
+    */
+   public static final String USE_MODIFIED_FOR_TRANSIENT_DELIVERY_ERRORS = "amqpUseModifiedForTransientDeliveryErrors";
+
+   /**
     * A desired capability added to the federation queue receiver link that must be offered in return for a federation
     * queue receiver to be successfully opened.  On the remote the presence of this capability indicates that the
     * matching queue should be present on the remote and its absence constitutes a failure that should result in the

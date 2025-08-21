@@ -28,6 +28,7 @@ import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPF
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.RECEIVER_CREDITS;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.RECEIVER_CREDITS_LOW;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.RECEIVER_QUIESCE_TIMEOUT;
+import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.USE_MODIFIED_FOR_TRANSIENT_DELIVERY_ERRORS;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -227,6 +228,20 @@ public final class AMQPFederationConsumerConfiguration {
          return Boolean.parseBoolean(string);
       } else {
          return configuration.isIgnoreSubscriptionPriorities();
+      }
+   }
+
+   /**
+    * (@return the use modified for transient delivery errors configuration}
+    */
+   public boolean isUseModifiedForTransientDeliveryErrors() {
+      final Object property = properties.get(USE_MODIFIED_FOR_TRANSIENT_DELIVERY_ERRORS);
+      if (property instanceof Boolean booleanValue) {
+         return booleanValue;
+      } else if (property instanceof String string) {
+         return Boolean.parseBoolean(string);
+      } else {
+         return configuration.isUseModifiedForTransientDeliveryErrors();
       }
    }
 }

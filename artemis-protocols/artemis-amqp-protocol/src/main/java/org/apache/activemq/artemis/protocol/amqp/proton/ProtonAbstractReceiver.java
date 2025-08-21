@@ -90,7 +90,7 @@ public abstract class ProtonAbstractReceiver extends ProtonInitializable impleme
       this.receiver = receiver;
       this.minLargeMessageSize = getConfiguredMinLargeMessageSize(connection);
       this.creditRunnable = createCreditRunnable(connection);
-      this.useModified = this.connection.getProtocolManager().isUseModifiedForTransientDeliveryErrors();
+      this.useModified = isUseModifiedForTransientDeliveryErrors(connection);
       this.routingContext = new RoutingContextImpl(null).setDuplicateDetection(connection.getProtocolManager().isAmqpDuplicateDetection());
    }
 
@@ -213,6 +213,19 @@ public abstract class ProtonAbstractReceiver extends ProtonInitializable impleme
             messageReader = null;
          }
       });
+   }
+
+   /**
+    * Should the receiver send an AMQP Modified disposition with delivery failed set to true for
+    * address full errors instead of the Rejected disposition it would by default.
+    *
+    * @param connection
+    *    The connection context that this receiver instance is bound to
+    *
+    * @return <code>true</code> if the receiver send a modified outcome and false for rejected outcomes.
+    */
+   protected boolean isUseModifiedForTransientDeliveryErrors(AMQPConnectionContext connection) {
+      return connection.getProtocolManager().isUseModifiedForTransientDeliveryErrors();
    }
 
    /**
