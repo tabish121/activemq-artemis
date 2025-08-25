@@ -96,6 +96,8 @@ public class ProtonProtocolManager extends AbstractProtocolManager<AMQPMessage, 
 
    private boolean amqpUseModifiedForTransientDeliveryErrors = AmqpSupport.AMQP_USE_MODIFIED_FOR_TRANSIENT_DELIVERY_ERRORS;
 
+   private boolean amqpDrainCreditForTransientDeliveryErrors = AmqpSupport.AMQP_DRAIN_CREDIT_FOR_TRANSIENT_DELIVERY_ERRORS;
+
    // If set true, a reject disposition will be treated as if it were an unmodified disposition with the
    // delivery-failed flag set true.
    private boolean amqpTreatRejectAsUnmodifiedDeliveryFailed = AmqpSupport.AMQP_TREAT_REJECT_AS_UNMODIFIED_DELIVERY_FAILURE;
@@ -105,6 +107,8 @@ public class ProtonProtocolManager extends AbstractProtocolManager<AMQPMessage, 
    private String[] saslMechanisms = MechanismFinder.getDefaultMechanisms();
 
    private String saslLoginConfigScope = "amqp-sasl-gssapi";
+
+   private int amqpDrainTimeout = AmqpSupport.AMQP_DRAIN_TIMEOUT;
 
    private Long amqpIdleTimeout;
 
@@ -449,12 +453,52 @@ public class ProtonProtocolManager extends AbstractProtocolManager<AMQPMessage, 
       return this;
    }
 
-
    public void setAmqpTreatRejectAsUnmodifiedDeliveryFailed(final boolean amqpTreatRejectAsUnmodifiedDeliveryFailed) {
       this.amqpTreatRejectAsUnmodifiedDeliveryFailed = amqpTreatRejectAsUnmodifiedDeliveryFailed;
    }
 
    public boolean isAmqpTreatRejectAsUnmodifiedDeliveryFailed() {
       return this.amqpTreatRejectAsUnmodifiedDeliveryFailed;
+   }
+
+   /**
+    * {@return true if transient delivery errors should be handled by draining link credit from the remote sender}
+    */
+   public boolean isDrainCreditForTransientDeliveryErrors() {
+      return this.amqpDrainCreditForTransientDeliveryErrors;
+   }
+
+   /**
+    * Sets if transient delivery errors should be handled by draining link credit from the remote sender
+    *
+    * @param amqpDrainCreditForTransientDeliveryErrors
+    *    Set to <code>true</code> if senders should be drained on transient delivery errors.
+    *
+    * @return this protocol manager instance.
+    */
+   public ProtonProtocolManager setAmqpDrainCreditForTransientDeliveryErrors(boolean amqpDrainCreditForTransientDeliveryErrors) {
+      this.amqpDrainCreditForTransientDeliveryErrors = amqpDrainCreditForTransientDeliveryErrors;
+      return this;
+   }
+
+   /**
+    * {@return the time in seconds to wait for remote sender once a drain is initiated by this peer}
+    */
+   public int getDrainTimeout() {
+      return amqpDrainTimeout;
+   }
+
+   /**
+    * Sets the time in seconds to wait before closing a remote sender link if the server has requested
+    * that the link drain all outstanding credit. A value less than or equal to zero disables drain timeouts.
+    *
+    * @param amqpDrainTimeout
+    *    The time in seconds to wait for drains to complete.
+    *
+    * @return this protocol manager instance.
+    */
+   public ProtonProtocolManager setAmqpDrainTimeout(int amqpDrainTimeout) {
+      this.amqpDrainTimeout = amqpDrainTimeout;
+      return this;
    }
 }
