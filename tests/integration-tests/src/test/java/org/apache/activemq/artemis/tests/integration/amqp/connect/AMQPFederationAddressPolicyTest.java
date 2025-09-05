@@ -43,11 +43,13 @@ import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPF
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.POLICY_PROPERTIES_MAP;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.RECEIVER_CREDITS;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.RECEIVER_CREDITS_LOW;
+import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.RECEIVER_DRAIN_ON_TRANSIENT_DELIVERY_ERRORS;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.RECEIVER_QUIESCE_TIMEOUT;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.REQUESTED_ADDRESS_ADDED;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.REQUESTED_ADDRESS_NAME;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.TRANSFORMER_CLASS_NAME;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.TRANSFORMER_PROPERTIES_MAP;
+import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationConstants.USE_MODIFIED_FOR_TRANSIENT_DELIVERY_ERRORS;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationPolicySupport.FEDERATED_ADDRESS_SOURCE_PROPERTIES;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationPolicySupport.MESSAGE_HOPS_ANNOTATION;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationPolicySupport.generateAddressFilter;
@@ -6254,10 +6256,11 @@ public class AMQPFederationAddressPolicyTest extends AmqpClientTestSupport {
          element.addLocalAddressPolicy(receiveFromAddress);
          element.addProperty(ADDRESS_RECEIVER_IDLE_TIMEOUT, 0);
          element.addProperty(IGNORE_ADDRESS_BINDING_FILTERS, Boolean.toString(ignoreFilters));
+         element.addProperty(USE_MODIFIED_FOR_TRANSIENT_DELIVERY_ERRORS, Boolean.toString(useModifiedForReject));
 
          final AMQPBrokerConnectConfiguration amqpConnection =
             new AMQPBrokerConnectConfiguration(getTestName(),
-               "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort() + "?amqpUseModifiedForTransientDeliveryErrors=" + useModifiedForReject);
+               "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort() + "?amqpUseModifiedForTransientDeliveryErrors=" + !useModifiedForReject);
          amqpConnection.setReconnectAttempts(0);// No reconnects
          amqpConnection.addElement(element);
 
@@ -6528,6 +6531,225 @@ public class AMQPFederationAddressPolicyTest extends AmqpClientTestSupport {
                                             .withValue("Message").and()
                                             .accept();
          peer.remoteFlow().withLinkCredit(1).withDeliveryCount(1).now();
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectClose();
+         peer.remoteClose().now();
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.close();
+
+         server.stop();
+      }
+   }
+
+   @Test
+   @Timeout(20)
+   public void testNonFilteringFederationReceiverRejectsWithModifiedDeliveryFailedAsDefault() throws Exception {
+      doTestFederationReceiverRejectsWithModifiedDeliveryFailedAsDefault(true);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testFilteringFederationReceiverRejectsWithModifiedDeliveryFailedAsDefault() throws Exception {
+      doTestFederationReceiverRejectsWithModifiedDeliveryFailedAsDefault(false);
+   }
+
+   protected void doTestFederationReceiverRejectsWithModifiedDeliveryFailedAsDefault(boolean ignoreFilters) throws Exception {
+      try (ProtonTestServer peer = new ProtonTestServer()) {
+         peer.expectSASLAnonymousConnect();
+         peer.expectOpen().respond();
+         peer.expectBegin().respond();
+         peer.expectAttach().ofSender()
+                            .withProperty(FEDERATION_VERSION.toString(), FEDERATION_V2)
+                            .withDesiredCapability(FEDERATION_CONTROL_LINK.toString())
+                            .respond()
+                            .withProperty(FEDERATION_VERSION.toString(), FEDERATION_V2)
+                            .withOfferedCapabilities(FEDERATION_CONTROL_LINK.toString());
+         peer.expectAttach().ofReceiver()
+                            .withSenderSettleModeSettled()
+                            .withSource().withDynamic(true)
+                            .and()
+                            .withDesiredCapability(FEDERATION_EVENT_LINK.toString())
+                            .respondInKind()
+                            .withTarget().withAddress("dynamic-events");
+         peer.expectFlow().withLinkCredit(10);
+         peer.start();
+
+         final URI remoteURI = peer.getServerURI();
+         logger.info("Test started, peer listening on: {}", remoteURI);
+
+         final AMQPFederationAddressPolicyElement receiveFromAddress = new AMQPFederationAddressPolicyElement();
+         receiveFromAddress.setName("address-policy");
+         receiveFromAddress.addToIncludes(getTestName());
+         receiveFromAddress.addProperty(IGNORE_ADDRESS_BINDING_FILTERS, String.valueOf(ignoreFilters));
+
+         final AMQPFederatedBrokerConnectionElement element = new AMQPFederatedBrokerConnectionElement();
+         element.setName(getTestName());
+         element.addLocalAddressPolicy(receiveFromAddress);
+
+         final AMQPBrokerConnectConfiguration amqpConnection =
+            new AMQPBrokerConnectConfiguration(getTestName(), "tcp://" + remoteURI.getHost() + ":" + remoteURI.getPort());
+         amqpConnection.setReconnectAttempts(0);// No reconnects
+         amqpConnection.addElement(element);
+
+         final AddressSettings addressSettings = server.getAddressSettingsRepository().getMatch(getTestName());
+         addressSettings.setAddressFullMessagePolicy(AddressFullMessagePolicy.FAIL);
+         addressSettings.setMaxSizeBytes(500);
+         server.getAddressSettingsRepository().addMatch(getTestName(), addressSettings);
+         server.getConfiguration().addAMQPConnection(amqpConnection);
+         server.start();
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+
+         final String payload = "A".repeat(2048);
+
+         peer.expectAttach().ofReceiver()
+                            .withDesiredCapability(FEDERATION_ADDRESS_RECEIVER.toString())
+                            .withName(allOf(containsString(getTestName()),
+                                            containsString("address-receiver"),
+                                            containsString(server.getNodeID().toString())))
+                            .withProperty(FEDERATION_POLICY_NAME.toString(), "address-policy")
+                            .respond()
+                            .withOfferedCapabilities(FEDERATION_ADDRESS_RECEIVER.toString());
+         peer.expectFlow().withLinkCredit(1000);
+
+         server.createQueue(QueueConfiguration.of(getTestName()).setRoutingType(RoutingType.MULTICAST)
+                                                                .setAddress(getTestName())
+                                                                .setAutoCreated(false)
+                                                                .setFilterString("color='red'"));
+
+         Wait.assertTrue(() -> server.queueQuery(SimpleString.of(getTestName())).isExists(), 5000, 100);
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+
+         peer.expectDisposition().withState().accepted();       // This should fill the address
+         peer.expectFlow().withLinkCredit(998).withDrain(true); // Receiver drains credit before sending the disposition
+         peer.expectDisposition().withState().modified(true);   // Expect modified / failed so remote doesn't drop the message
+
+         peer.remoteTransfer().withHeader().withDurability(true).also()
+                              .withApplicationProperties().withProperty("color", "red").also()
+                              .withMessageAnnotations().withAnnotation("x-opt-test", "1").also()
+                              .withBody().withString("First Message: " + payload)
+                              .also()
+                              .withDeliveryId(1)
+                              .now();
+         peer.remoteTransfer().withHeader().withDurability(true).also()
+                              .withApplicationProperties().withProperty("color", "red").also()
+                              .withMessageAnnotations().withAnnotation("x-opt-test", "2").also()
+                              .withBody().withString("Second Message: ")
+                              .also()
+                              .withDeliveryId(2)
+                              .later(10);
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectClose();
+         peer.remoteClose().now();
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.close();
+      }
+   }
+
+   @Test
+   @Timeout(20)
+   public void testRemoteFederationRespectsUseModifiedForRejectConfigurationWhenSetToReject() throws Exception {
+      testRemoteFederationRespectsUseModifiedForRejectConfiguration(false, true);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testRemoteFederationRespectsUseModifiedForRejectConfigurationWhenSetToModify() throws Exception {
+      testRemoteFederationRespectsUseModifiedForRejectConfiguration(true, true);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testRemoteFederationRespectsUseModifiedForRejectConfigurationWhenSetToRejectNoDrainOnFull() throws Exception {
+      testRemoteFederationRespectsUseModifiedForRejectConfiguration(false, false);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testRemoteFederationRespectsUseModifiedForRejectConfigurationWhenSetToModifyNoDrainOnFull() throws Exception {
+      testRemoteFederationRespectsUseModifiedForRejectConfiguration(true, false);
+   }
+
+   private void testRemoteFederationRespectsUseModifiedForRejectConfiguration(boolean useModified, boolean drainOnAddressFull) throws Exception {
+      final AddressSettings addressSettings = server.getAddressSettingsRepository().getMatch(getTestName());
+      addressSettings.setAddressFullMessagePolicy(AddressFullMessagePolicy.FAIL);
+      addressSettings.setMaxSizeBytes(500);
+      server.getAddressSettingsRepository().addMatch(getTestName(), addressSettings);
+      server.start();
+
+      final String payload = "A".repeat(2048);
+
+      final List<String> includes = new ArrayList<>();
+      includes.add(getTestName());
+
+      final Map<String, Object> properties = new HashMap<>();
+      properties.put(ADDRESS_RECEIVER_IDLE_TIMEOUT, 5);
+      properties.put(USE_MODIFIED_FOR_TRANSIENT_DELIVERY_ERRORS, useModified);
+      properties.put(RECEIVER_DRAIN_ON_TRANSIENT_DELIVERY_ERRORS, drainOnAddressFull);
+
+      final FederationReceiveFromAddressPolicy policy =
+         new FederationReceiveFromAddressPolicy("test-address-policy",
+                                                true, 30_000L, 1000L, -1, true,
+                                                includes, null, properties, null,
+                                                DEFAULT_WILDCARD_CONFIGURATION);
+
+      try (ProtonTestClient peer = new ProtonTestClient()) {
+         scriptFederationConnectToRemote(peer, "test");
+         peer.connect("localhost", AMQP_PORT);
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectDisposition().withSettled(true).withState().accepted();
+
+         sendAddresPolicyToRemote(peer, policy);
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectAttach().ofReceiver()
+                            .withDesiredCapability(FEDERATION_ADDRESS_RECEIVER.toString())
+                            .withSource().withAddress(notNullValue())
+                            .and()
+                            .respondInKind(); // Server detected demand
+         peer.expectFlow().withLinkCredit(1000);
+
+         server.createQueue(QueueConfiguration.of(getTestName()).setRoutingType(RoutingType.MULTICAST)
+                                                                .setAddress(getTestName())
+                                                                .setAutoCreated(false)
+                                                                .setFilterString("color='red'"));
+
+         Wait.assertTrue(() -> server.queueQuery(SimpleString.of(getTestName())).isExists(), 5000, 100);
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+
+         peer.expectDisposition().withState().accepted();
+
+         if (drainOnAddressFull) {
+            peer.expectFlow().withLinkCredit(998).withDrain(true)
+                             .respond()
+                             .withLinkCredit(0).withDeliveryCount(1000);
+         }
+
+         if (useModified) {
+            peer.expectDisposition().withState().modified(true);
+         } else {
+            peer.expectDisposition().withState().rejected();
+         }
+
+         peer.remoteTransfer().withHeader().withDurability(true).also()
+                              .withApplicationProperties().withProperty("color", "red").also()
+                              .withMessageAnnotations().withAnnotation("x-opt-test", "1").also()
+                              .withBody().withString("First Message: " + payload)
+                              .also()
+                              .withDeliveryId(1)
+                              .now();
+         peer.remoteTransfer().withHeader().withDurability(true).also()
+                              .withApplicationProperties().withProperty("color", "red").also()
+                              .withMessageAnnotations().withAnnotation("x-opt-test", "2").also()
+                              .withBody().withString("Second Message: ")
+                              .also()
+                              .withDeliveryId(2)
+                              .later(10);
 
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
          peer.expectClose();
