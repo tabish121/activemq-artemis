@@ -80,6 +80,7 @@ public class QueueConfiguration implements Serializable {
    public static final String TRANSIENT = "transient";
    public static final String AUTO_CREATED = "auto-created";
    public static final String FQQN = "fqqn";
+   public static final String JSON_ATTACHMENT = "json-attachment";
 
    private Long id; // internal use
    private SimpleString name;
@@ -113,6 +114,7 @@ public class QueueConfiguration implements Serializable {
    private Boolean _transient;
    private Boolean autoCreated;
    private Boolean fqqn;
+   private SimpleString jsonAttachment;
 
    /**
     * Instance factory which invokes {@link #setName(SimpleString)}
@@ -187,6 +189,7 @@ public class QueueConfiguration implements Serializable {
       _transient = o._transient;
       autoCreated = o.autoCreated;
       fqqn = o.fqqn;
+      jsonAttachment = o.jsonAttachment;
    }
 
    /**
@@ -247,6 +250,7 @@ public class QueueConfiguration implements Serializable {
     * <li>internal: {@link #INTERNAL}
     * <li>transient: {@link #TRANSIENT}
     * <li>auto-created: {@link #AUTO_CREATED}
+    * <li>json-attachment: {@link #JSON_ATTACHMENT}
     * </ul>
     * The {@code String}-based values will be converted to the proper value types based on the underlying property. For
     * example, if you pass the value "TRUE" for the key "auto-created" the {@code String} "TRUE" will be converted to
@@ -317,6 +321,8 @@ public class QueueConfiguration implements Serializable {
          } else if (key.equals(TRANSIENT)) {
             setTransient(Boolean.valueOf(value));
          } else if (key.equals(AUTO_CREATED)) {
+            setAutoCreated(Boolean.valueOf(value));
+         } else if (key.equals(JSON_ATTACHMENT)) {
             setAutoCreated(Boolean.valueOf(value));
          }
       }
@@ -716,6 +722,26 @@ public class QueueConfiguration implements Serializable {
    }
 
    /**
+    * {@return a string payload formatted in JSON that was assigned to this configuration}
+    */
+   public SimpleString getJsonAttachment() {
+      return jsonAttachment;
+   }
+
+   /**
+    * Sets a JSON encoded string that is attached to the Queue created from this configuration.
+    *
+    * @param jsonAttachment
+    *    The JSON attachment string to assign to this {@link QueueConfiguration} instance.
+    *
+    * @return this {@link QueueConfiguration} instance
+    */
+   public QueueConfiguration setJsonAttachment(SimpleString jsonAttachment) {
+      this.jsonAttachment = jsonAttachment;
+      return this;
+   }
+
+   /**
     * This method returns a JSON-formatted {@code String} representation of this {@code QueueConfiguration}. It is a
     * simple collection of key/value pairs. The keys used are referenced in {@link #set(String, String)}.
     *
@@ -820,6 +846,9 @@ public class QueueConfiguration implements Serializable {
       if (isFqqn() != null) {
          builder.add(FQQN, isFqqn());
       }
+      if (getJsonAttachment() != null) {
+         builder.add(JSON_ATTACHMENT, getJsonAttachment().toString());
+      }
 
       return builder.build().toString();
    }
@@ -886,7 +915,8 @@ public class QueueConfiguration implements Serializable {
              Objects.equals(internal, other.internal) &&
              Objects.equals(_transient, other._transient) &&
              Objects.equals(autoCreated, other.autoCreated) &&
-             Objects.equals(fqqn, other.fqqn);
+             Objects.equals(fqqn, other.fqqn) &&
+             Objects.equals(jsonAttachment, other.jsonAttachment);
    }
 
    public boolean isMirrorQueue() {
@@ -900,7 +930,7 @@ public class QueueConfiguration implements Serializable {
                           lastValueKey, nonDestructive, purgeOnNoConsumers, enabled, consumersBeforeDispatch,
                           delayBeforeDispatch, consumerPriority, autoDelete, autoDeleteDelay, autoDeleteMessageCount,
                           ringSize, configurationManaged, temporary, autoCreateAddress, internal, _transient,
-                          autoCreated, fqqn);
+                          autoCreated, fqqn, jsonAttachment);
    }
 
    @Override
@@ -937,6 +967,7 @@ public class QueueConfiguration implements Serializable {
          + ", internal=" + internal
          + ", transient=" + _transient
          + ", autoCreated=" + autoCreated
-         + ", fqqn=" + fqqn + ']';
+         + ", fqqn=" + fqqn
+         + ", jsonAttachment=" + jsonAttachment + ']';
    }
 }

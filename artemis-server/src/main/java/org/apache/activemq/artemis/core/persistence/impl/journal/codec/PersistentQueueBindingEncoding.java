@@ -142,6 +142,9 @@ public class PersistentQueueBindingEncoding implements EncodingSupport, QueueBin
       if (buffer.readable()) {
          config.setInternal(buffer.readBoolean());
       }
+      if (buffer.readable()) {
+         config.setJsonAttachment(buffer.readNullableSimpleString());
+      }
       QueueConfigurationUtils.applyStaticDefaults(config);
    }
 
@@ -172,6 +175,7 @@ public class PersistentQueueBindingEncoding implements EncodingSupport, QueueBin
       buffer.writeBoolean(config.isEnabled());
       buffer.writeBoolean(config.isGroupRebalancePauseDispatch());
       buffer.writeBoolean(config.isInternal());
+      buffer.writeNullableSimpleString(config.getJsonAttachment());
    }
 
    @Override
@@ -198,7 +202,8 @@ public class PersistentQueueBindingEncoding implements EncodingSupport, QueueBin
          DataConstants.SIZE_LONG +
          DataConstants.SIZE_BOOLEAN +
          DataConstants.SIZE_BOOLEAN +
-         DataConstants.SIZE_BOOLEAN;
+         DataConstants.SIZE_BOOLEAN +
+         SimpleString.sizeofNullableString(config.getJsonAttachment());
    }
 
    private SimpleString createMetadata() {

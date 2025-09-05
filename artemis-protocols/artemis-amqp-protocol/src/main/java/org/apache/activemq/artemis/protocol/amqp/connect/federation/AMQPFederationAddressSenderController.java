@@ -36,6 +36,7 @@ import org.apache.activemq.artemis.api.core.SimpleString;
 import org.apache.activemq.artemis.core.server.AddressQueryResult;
 import org.apache.activemq.artemis.core.server.QueueQueryResult;
 import org.apache.activemq.artemis.core.server.ServerConsumer;
+import org.apache.activemq.artemis.json.JsonObjectBuilder;
 import org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationMetrics.ProducerMetrics;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPException;
 import org.apache.activemq.artemis.protocol.amqp.exceptions.ActiveMQAMQPIllegalStateException;
@@ -48,6 +49,7 @@ import org.apache.activemq.artemis.reader.MessageUtil;
 import org.apache.activemq.artemis.selector.filter.FilterException;
 import org.apache.activemq.artemis.selector.impl.SelectorParser;
 import org.apache.activemq.artemis.utils.CompositeAddress;
+import org.apache.activemq.artemis.utils.JsonLoader;
 import org.apache.qpid.proton.amqp.DescribedType;
 import org.apache.qpid.proton.amqp.Symbol;
 import org.apache.qpid.proton.amqp.messaging.Source;
@@ -169,6 +171,10 @@ public final class AMQPFederationAddressSenderController extends AMQPFederationS
       // Recover or create the queue we use to reflect the messages sent to the address to the remote
       QueueQueryResult queueQuery = sessionSPI.queueQuery(queueName, routingType, false);
       if (!queueQuery.isExists()) {
+         final JsonObjectBuilder builder = JsonLoader.createObjectBuilder();
+
+         builder.add("FEDERATION_REMOTE_NODE_ID", session.getSession().getConnection().getRemoteContainer());
+
          final QueueConfiguration configuration = QueueConfiguration.of(queueName);
 
          configuration.setAddress(address);
@@ -182,6 +188,7 @@ public final class AMQPFederationAddressSenderController extends AMQPFederationS
          configuration.setAutoDelete(autoDelete);
          configuration.setAutoDeleteDelay(autoDeleteDelay);
          configuration.setAutoDeleteMessageCount(autoDeleteMsgCount);
+         configuration.setJsonAttachment(SimpleString.of(builder.build().toString()));
 
          // Try and create it and then later we will validate fully that it matches our expectations
          // since we could lose a race with some other resource creating its own resources.

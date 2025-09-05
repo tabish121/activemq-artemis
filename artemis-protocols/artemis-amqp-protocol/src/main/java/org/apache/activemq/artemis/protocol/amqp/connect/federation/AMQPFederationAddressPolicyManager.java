@@ -19,6 +19,7 @@ package org.apache.activemq.artemis.protocol.amqp.connect.federation;
 
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationPolicySupport.generateAddressFilter;
 
+import java.io.StringReader;
 import java.lang.invoke.MethodHandles;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -28,6 +29,7 @@ import java.util.HexFormat;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import org.apache.activemq.artemis.api.config.ActiveMQDefaultConfiguration;
 import org.apache.activemq.artemis.api.core.ActiveMQException;
@@ -41,9 +43,12 @@ import org.apache.activemq.artemis.core.server.ActiveMQServerLogger;
 import org.apache.activemq.artemis.core.server.impl.AddressInfo;
 import org.apache.activemq.artemis.core.server.plugin.ActiveMQServerAddressPlugin;
 import org.apache.activemq.artemis.core.transaction.Transaction;
+import org.apache.activemq.artemis.json.JsonObject;
 import org.apache.activemq.artemis.protocol.amqp.federation.FederationConsumerInfo;
 import org.apache.activemq.artemis.protocol.amqp.federation.FederationReceiveFromAddressPolicy;
+import org.apache.activemq.artemis.protocol.amqp.proton.AMQPSessionContext;
 import org.apache.activemq.artemis.utils.CompositeAddress;
+import org.apache.activemq.artemis.utils.JsonLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -54,10 +59,14 @@ public final class AMQPFederationAddressPolicyManager extends AMQPFederationLoca
 
    private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
+   private static final String OPPOSING_PEER_MATCHING_TEMPLATE = "^federation\\..+?\\.policy\\..+?\\.address\\..*?\\.node\\.%s$";
+
    protected final String baseConsumerFilter;
    protected final FederationReceiveFromAddressPolicy policy;
    protected final Map<String, AMQPFederationAddressConsumerRegistry> addressTracking = new HashMap<>();
    protected final Map<DivertBinding, Set<QueueBinding>> divertsTracking = new HashMap<>();
+
+   private Pattern opposingPeerBindingPattern; // Initialized on each connect to the remote.
 
    public AMQPFederationAddressPolicyManager(AMQPFederation federation, AMQPFederationMetrics metrics, FederationReceiveFromAddressPolicy addressPolicy) throws ActiveMQException {
       super(federation, metrics, addressPolicy);
@@ -226,6 +235,13 @@ public final class AMQPFederationAddressPolicyManager extends AMQPFederationLoca
                return;
             }
 
+            // Don't treat bindings from the target as demand only local or remote bindings not
+            // from the target are real demand that should move messages from the target to the
+            // source.
+            if (isBidingFromOpposingFederationTarget(queueBinding)) {
+               return;
+            }
+
             createOrUpdateFederatedAddressConsumerForBinding(addressInfo, queueBinding);
          } else {
             reactIfQueueBindingMatchesAnyDivertTarget(queueBinding);
@@ -233,6 +249,46 @@ public final class AMQPFederationAddressPolicyManager extends AMQPFederationLoca
       } else if (binding instanceof DivertBinding divertBinding) {
          reactIfAnyQueueBindingMatchesDivertTarget(divertBinding);
       }
+   }
+
+   private boolean isBidingFromOpposingFederationTarget(QueueBinding queueBinding) {
+      final String queueName = queueBinding.getQueue().getName().toString();
+
+      if (queueBinding.getQueue().getQueueConfiguration().getJsonAttachment() != null) {
+         final StringReader reader = new StringReader(queueBinding.getQueue().getQueueConfiguration().getJsonAttachment().toString());
+
+         try {
+            final JsonObject attachment = JsonLoader.readObject(reader);
+            final String remoteNodeID = attachment.getString("FEDERATION_REMOTE_NODE_ID");
+
+            if (session.getSession().getConnection().getRemoteContainer().equals(remoteNodeID)) {
+               return true;
+            }
+         } catch (Exception e) {
+            logger.trace("Ignoring error while checking JSON attachment on Queue for federation meta-data", e);
+         }
+      }
+
+      // If the binding is from the remote peer we are connected to then we shouldn't treat this as
+      // demand as we would really only need to pull messages from the remote if there was some other
+      // local binding or a binding from a peer that isn't the target of this federation policy manager.
+      // If we do treat that as demand we could just be creating a dead loop where the remote sends any
+      // messages sent to its address to this peer but there could be no actual local bindings that care
+      // and we never loop messages back to their source so they would just be dropped here.
+      if (opposingPeerBindingPattern.matcher(queueName).matches()) {
+         return true;
+      }
+
+      return false;
+   }
+
+   @Override
+   protected void updateStateAfterConnect(AMQPFederationConsumerConfiguration configuration, AMQPSessionContext session) {
+      final String remoteNodeId = session.getSession().getConnection().getRemoteContainer();
+      final String formattedPattern = String.format(
+         OPPOSING_PEER_MATCHING_TEMPLATE, Pattern.quote(remoteNodeId));
+
+      opposingPeerBindingPattern = Pattern.compile(formattedPattern);
    }
 
    private void reactIfAnyQueueBindingMatchesDivertTarget(DivertBinding divertBinding) {
