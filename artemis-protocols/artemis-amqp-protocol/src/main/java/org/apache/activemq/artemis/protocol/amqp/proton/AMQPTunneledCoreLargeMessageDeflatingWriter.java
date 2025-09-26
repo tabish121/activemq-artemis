@@ -17,7 +17,7 @@
 
 package org.apache.activemq.artemis.protocol.amqp.proton;
 
-import static org.apache.activemq.artemis.protocol.amqp.proton.AMQPArtemisMessageFormats.AMQP_TUNNELED_CORE_LARGE_MESSAGE_FORMAT;
+import static org.apache.activemq.artemis.protocol.amqp.proton.AMQPArtemisMessageFormats.AMQP_COMPRESSED_TUNNELED_CORE_LARGE_MESSAGE_FORMAT;
 
 import java.lang.invoke.MethodHandles;
 
@@ -48,7 +48,7 @@ import io.netty.buffer.Unpooled;
  * an AMQP Delivery that will be sent across to the remote peer where it can be processed and a Core message recreated
  * for dispatch as if it had been sent from a Core connection.
  */
-public class AMQPTunneledCoreLargeMessageWriter implements MessageWriter {
+public class AMQPTunneledCoreLargeMessageDeflatingWriter implements MessageWriter {
 
    private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
@@ -102,7 +102,7 @@ public class AMQPTunneledCoreLargeMessageWriter implements MessageWriter {
 
    private volatile State state = State.CLOSED;
 
-   public AMQPTunneledCoreLargeMessageWriter(ProtonServerSenderContext serverSender) {
+   public AMQPTunneledCoreLargeMessageDeflatingWriter(ProtonServerSenderContext serverSender) {
       this.serverSender = serverSender;
       this.connection = serverSender.getSessionContext().getAMQPConnectionContext();
       this.protonSender = serverSender.getSender();
@@ -127,7 +127,7 @@ public class AMQPTunneledCoreLargeMessageWriter implements MessageWriter {
    }
 
    @Override
-   public AMQPTunneledCoreLargeMessageWriter open(MessageReference reference) {
+   public AMQPTunneledCoreLargeMessageDeflatingWriter open(MessageReference reference) {
       if (state != State.CLOSED) {
          throw new IllegalStateException("Trying to open an AMQP Large Message writer that was not closed");
       }
@@ -167,7 +167,7 @@ public class AMQPTunneledCoreLargeMessageWriter implements MessageWriter {
       message = (LargeServerMessageImpl) messageReference.getMessage();
       annotations = reference.getProtocolData(DeliveryAnnotations.class);
 
-      delivery = serverSender.createDelivery(messageReference, AMQP_TUNNELED_CORE_LARGE_MESSAGE_FORMAT);
+      delivery = serverSender.createDelivery(messageReference, AMQP_COMPRESSED_TUNNELED_CORE_LARGE_MESSAGE_FORMAT);
       // We will deduct some bytes from the frame for encoding the Transfer payload which could exclude
       // the delivery tag on successive transfers but we aren't sure if that will happen so we assume not.
       frameSize = protonSender.getSession().getConnection().getTransport().getOutboundFrameSizeLimit() - 50 - (delivery.getTag() != null ? delivery.getTag().length : 0);

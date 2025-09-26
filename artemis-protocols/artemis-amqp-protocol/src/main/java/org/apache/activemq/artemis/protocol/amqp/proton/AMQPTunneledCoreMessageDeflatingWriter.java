@@ -20,16 +20,18 @@ package org.apache.activemq.artemis.protocol.amqp.proton;
 import static org.apache.activemq.artemis.protocol.amqp.proton.AMQPArtemisMessageFormats.AMQP_TUNNELED_CORE_MESSAGE_FORMAT;
 
 import java.lang.invoke.MethodHandles;
-import org.apache.activemq.artemis.api.core.ActiveMQBuffer;
+import java.nio.ByteBuffer;
+import java.util.zip.Deflater;
+
 import org.apache.activemq.artemis.api.core.ActiveMQBuffers;
 import org.apache.activemq.artemis.api.core.ICoreMessage;
 import org.apache.activemq.artemis.core.server.MessageReference;
+import org.apache.activemq.artemis.protocol.amqp.util.NettyReadable;
 import org.apache.activemq.artemis.protocol.amqp.util.NettyWritable;
 import org.apache.activemq.artemis.protocol.amqp.util.TLSEncode;
 import org.apache.qpid.proton.amqp.messaging.DeliveryAnnotations;
 import org.apache.qpid.proton.codec.EncoderImpl;
 import org.apache.qpid.proton.codec.EncodingCodes;
-import org.apache.qpid.proton.codec.ReadableBuffer;
 import org.apache.qpid.proton.codec.WritableBuffer;
 import org.apache.qpid.proton.engine.Delivery;
 import org.apache.qpid.proton.engine.EndpointState;
@@ -46,7 +48,7 @@ import io.netty.buffer.Unpooled;
  * AMQP Delivery that will be sent across to the remote peer where it can be processed and a Core message recreated for
  * dispatch as if it had been sent from a Core connection.
  */
-public class AMQPTunneledCoreMessageWriter implements MessageWriter {
+public class AMQPTunneledCoreMessageDeflatingWriter implements MessageWriter {
 
    private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
@@ -56,9 +58,17 @@ public class AMQPTunneledCoreMessageWriter implements MessageWriter {
    private final ProtonServerSenderContext serverSender;
    private final Sender protonSender;
 
-   public AMQPTunneledCoreMessageWriter(ProtonServerSenderContext serverSender) {
+   private final Deflater deflater = new Deflater();
+   private final byte[] scratchBuffer = new byte[1024];
+
+   public AMQPTunneledCoreMessageDeflatingWriter(ProtonServerSenderContext serverSender) {
       this.serverSender = serverSender;
       this.protonSender = serverSender.getSender();
+   }
+
+   @Override
+   public void close() {
+      deflater.reset();
    }
 
    @Override
@@ -71,7 +81,7 @@ public class AMQPTunneledCoreMessageWriter implements MessageWriter {
       try {
          final ICoreMessage message = (ICoreMessage) messageReference.getMessage();
          final int encodedSize = message.getPersistSize();
-         final ByteBuf buffer = Unpooled.buffer(encodedSize + DATA_SECTION_ENCODING_BYTES); // Account for the data section
+         final ByteBuf encodedMessage = Unpooled.buffer(encodedSize);
          final Delivery delivery = serverSender.createDelivery(messageReference, AMQP_TUNNELED_CORE_MESSAGE_FORMAT);
 
          final DeliveryAnnotations annotations = messageReference.getProtocolData(DeliveryAnnotations.class);
@@ -79,37 +89,59 @@ public class AMQPTunneledCoreMessageWriter implements MessageWriter {
             final EncoderImpl encoder = TLSEncode.getEncoder();
 
             try {
-               encoder.setByteBuffer(new NettyWritable(buffer));
+               encoder.setByteBuffer(new NettyWritable(encodedMessage));
                encoder.writeObject(annotations);
             } finally {
                encoder.setByteBuffer((WritableBuffer) null);
             }
          }
 
+         // Persist into our allocated buffer knowing what the encoding will be, then compress it
+         message.persist(ActiveMQBuffers.wrappedBuffer(encodedMessage));
+         // Update the buffer that was allocated with the bytes that were written using the wrapper
+         // since the wrapper doesn't update the wrapper buffer.
+         encodedMessage.writerIndex(encodedMessage.writerIndex() + encodedSize);
+
+         // Target buffer to hold the compressed message which will grow as needed. We reserve the size
+         // needed to write the Data section preamble before passing this buffer of to the deflate method.
+         final ByteBuf deflatedMessage = Unpooled.buffer(scratchBuffer.length);
+
+         deflatedMessage.writerIndex(DATA_SECTION_ENCODING_BYTES);
+
+         deflateEncoding(encodedMessage, deflatedMessage);
+
          // This encoding would work up to a Core message that encodes to but does not exceed
          // 2 GB in which case we'd need to send multiple data sections but this would be unlikely
          // to succeed and Large message handling should have been in place for such messages.
 
-         buffer.writeByte(EncodingCodes.DESCRIBED_TYPE_INDICATOR);
-         buffer.writeByte(EncodingCodes.SMALLULONG);
-         buffer.writeByte(DATA_DESCRIPTOR);
-         buffer.writeByte(EncodingCodes.VBIN32);
-         buffer.writeInt(encodedSize); // Core message will encode into this size.
-
-         final ActiveMQBuffer bufferWrapper = ActiveMQBuffers.wrappedBuffer(buffer);
-
-         message.persist(bufferWrapper);
-
-         // Update the buffer that was allocated with the bytes that were written using the wrapper
-         // since the wrapper doesn't update the wrapper buffer.
-         buffer.writerIndex(buffer.writerIndex() + encodedSize);
+         deflatedMessage.writeByte(EncodingCodes.DESCRIBED_TYPE_INDICATOR);
+         deflatedMessage.writeByte(EncodingCodes.SMALLULONG);
+         deflatedMessage.writeByte(DATA_DESCRIPTOR);
+         deflatedMessage.writeByte(EncodingCodes.VBIN32);
+         deflatedMessage.writeInt(deflatedMessage.readableBytes());
 
          // Don't have pooled content, no need to release or copy.
-         protonSender.sendNoCopy(new ReadableBuffer.ByteBufferReader(buffer.nioBuffer()));
+         protonSender.sendNoCopy(new NettyReadable(deflatedMessage));
 
          serverSender.reportDeliveryComplete(this, messageReference, delivery, false);
       } catch (Exception deliveryError) {
          serverSender.reportDeliveryError(this, messageReference, deliveryError);
       }
+   }
+
+   protected ByteBuf deflateEncoding(ByteBuf inputBuf, ByteBuf outputBuf) {
+      final ByteBuffer inputBuffer = inputBuf.nioBuffer();
+
+      deflater.setInput(inputBuffer);
+      deflater.finish();
+
+      int compressedBytes = 0;
+
+      while (!deflater.finished()) {
+         compressedBytes = deflater.deflate(scratchBuffer);
+         outputBuf.writeBytes(scratchBuffer, 0, compressedBytes);
+      }
+
+      return outputBuf;
    }
 }
