@@ -54,8 +54,10 @@ import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPF
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationPolicySupport.FEDERATED_ADDRESS_SOURCE_PROPERTIES;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationPolicySupport.MESSAGE_HOPS_ANNOTATION;
 import static org.apache.activemq.artemis.protocol.amqp.connect.federation.AMQPFederationPolicySupport.generateAddressFilter;
-import static org.apache.activemq.artemis.protocol.amqp.proton.AMQPTunneledMessageConstants.AMQP_TUNNELED_CORE_LARGE_MESSAGE_FORMAT;
-import static org.apache.activemq.artemis.protocol.amqp.proton.AMQPTunneledMessageConstants.AMQP_TUNNELED_CORE_MESSAGE_FORMAT;
+import static org.apache.activemq.artemis.protocol.amqp.proton.AMQPArtemisMessageFormats.AMQP_COMPRESSED_MESSAGE_FORMAT;
+import static org.apache.activemq.artemis.protocol.amqp.proton.AMQPArtemisMessageFormats.AMQP_COMPRESSED_TUNNELED_CORE_MESSAGE_FORMAT;
+import static org.apache.activemq.artemis.protocol.amqp.proton.AMQPArtemisMessageFormats.AMQP_TUNNELED_CORE_LARGE_MESSAGE_FORMAT;
+import static org.apache.activemq.artemis.protocol.amqp.proton.AMQPArtemisMessageFormats.AMQP_TUNNELED_CORE_MESSAGE_FORMAT;
 import static org.hamcrest.CoreMatchers.allOf;
 import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.CoreMatchers.not;
@@ -132,6 +134,7 @@ import org.apache.qpid.protonj2.test.driver.ProtonTestClient;
 import org.apache.qpid.protonj2.test.driver.ProtonTestPeer;
 import org.apache.qpid.protonj2.test.driver.ProtonTestServer;
 import org.apache.qpid.protonj2.test.driver.codec.messaging.Source;
+import org.apache.qpid.protonj2.test.driver.codec.primitives.Binary;
 import org.apache.qpid.protonj2.test.driver.codec.primitives.DescribedType;
 import org.apache.qpid.protonj2.test.driver.codec.primitives.Symbol;
 import org.apache.qpid.protonj2.test.driver.codec.transport.Attach;
@@ -140,7 +143,9 @@ import org.apache.qpid.protonj2.test.driver.matchers.messaging.MessageAnnotation
 import org.apache.qpid.protonj2.test.driver.matchers.messaging.PropertiesMatcher;
 import org.apache.qpid.protonj2.test.driver.matchers.transport.TransferPayloadCompositeMatcher;
 import org.apache.qpid.protonj2.test.driver.matchers.types.EncodedAmqpValueMatcher;
+import org.hamcrest.Description;
 import org.hamcrest.Matchers;
+import org.hamcrest.TypeSafeMatcher;
 import org.jgroups.util.UUID;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -2856,7 +2861,8 @@ public class AMQPFederationAddressPolicyTest extends AmqpClientTestSupport {
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
          peer.expectAttach().ofSender().withName("federation-address-receiver")
                                        .withOfferedCapabilities(FEDERATION_ADDRESS_RECEIVER.toString())
-                                       .withDesiredCapabilities(AmqpSupport.CORE_MESSAGE_TUNNELING_SUPPORT.toString())
+                                       .withDesiredCapabilities(AmqpSupport.CORE_MESSAGE_TUNNELING_SUPPORT.toString(),
+                                                                AmqpSupport.INFLIGHT_MESSAGE_COMPRESSION_SUPPORT.toString())
                                        .withSource().withAddress("test");
 
          // Connect to remote as if an address had demand and matched our federation policy
@@ -2935,7 +2941,8 @@ public class AMQPFederationAddressPolicyTest extends AmqpClientTestSupport {
          peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
          peer.expectAttach().ofSender().withName("federation-address-receiver")
                                        .withOfferedCapabilities(FEDERATION_ADDRESS_RECEIVER.toString())
-                                       .withDesiredCapabilities(AmqpSupport.CORE_MESSAGE_TUNNELING_SUPPORT.toString())
+                                       .withDesiredCapabilities(AmqpSupport.CORE_MESSAGE_TUNNELING_SUPPORT.toString(),
+                                                                AmqpSupport.INFLIGHT_MESSAGE_COMPRESSION_SUPPORT.toString())
                                        .withSource().withAddress("test");
 
          // Connect to remote as if an address had demand and matched our federation policy
@@ -7030,6 +7037,217 @@ public class AMQPFederationAddressPolicyTest extends AmqpClientTestSupport {
          peer.close();
 
          server.stop();
+      }
+   }
+
+   @Test
+   @Timeout(20)
+   public void testAMQPMessageCompressedWhenInflightCompressionEnabled() throws Exception {
+      doTestAMQPMessageCompressionHandlingBasedOnConfiguration(false);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testAMQPMessageNotCompressedWhenInflightCompressionDisabled() throws Exception {
+      doTestAMQPMessageCompressionHandlingBasedOnConfiguration(true);
+   }
+
+   private void doTestAMQPMessageCompressionHandlingBasedOnConfiguration(boolean compress) throws Exception {
+      server.start();
+
+      final String[] receiverOfferedCapabilities;
+      final int messageFormat;
+      final String payload = "A".repeat(1024);
+
+      if (compress) {
+         receiverOfferedCapabilities = new String[] {AmqpSupport.INFLIGHT_MESSAGE_COMPRESSION_SUPPORT.toString()};
+         messageFormat = AMQP_COMPRESSED_MESSAGE_FORMAT;
+      } else {
+         receiverOfferedCapabilities = null;
+         messageFormat = 0;
+      }
+
+      try (ProtonTestClient peer = new ProtonTestClient()) {
+         scriptFederationConnectToRemote(peer, "test");
+         peer.connect("localhost", AMQP_PORT);
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectAttach().ofSender().withName("federation-address-receiver")
+                                       .withOfferedCapabilities(FEDERATION_ADDRESS_RECEIVER.toString())
+                                       .withDesiredCapabilities(AmqpSupport.CORE_MESSAGE_TUNNELING_SUPPORT.toString(),
+                                                                AmqpSupport.INFLIGHT_MESSAGE_COMPRESSION_SUPPORT.toString())
+                                       .withSource().withAddress(getTestName());
+
+         // Connect to remote as if an address had demand and matched our federation policy
+         // If inflight message compression is enabled we include the desired capability
+         peer.remoteAttach().ofReceiver()
+                            .withOfferedCapabilities(receiverOfferedCapabilities)
+                            .withDesiredCapabilities(FEDERATION_ADDRESS_RECEIVER.toString())
+                            .withName("federation-address-receiver")
+                            .withSenderSettleModeUnsettled()
+                            .withReceivervSettlesFirst()
+                            .withSource().withDurabilityOfNone()
+                                         .withExpiryPolicyOnLinkDetach()
+                                         .withAddress(getTestName())
+                                         .withCapabilities("topic")
+                                         .and()
+                            .withTarget().and()
+                            .now();
+         peer.remoteFlow().withLinkCredit(10).now();
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+
+         if (compress) {
+            peer.expectTransfer().withMessage().withData(new DataSectionSizeLessThanMatcher(payload.length()))
+                                 .withMessageFormat(messageFormat)
+                                 .and()
+                                 .accept();
+         } else {
+            peer.expectTransfer().withMessageFormat(messageFormat)
+                                 .withMessage()
+                                 .withHeader().and()
+                                 .withProperties().and()
+                                 .withMessageAnnotations().and()
+                                 .withValue(payload).and()
+                                 .accept();
+         }
+
+         final ConnectionFactory factory = CFUtil.createConnectionFactory("AMQP", "tcp://localhost:" + AMQP_PORT);
+
+         try (Connection connection = factory.createConnection()) {
+            final Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE);
+            final MessageProducer producer = session.createProducer(session.createTopic(getTestName()));
+
+            producer.send(session.createTextMessage(payload));
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         }
+
+         peer.expectClose();
+         peer.remoteClose().now();
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.close();
+
+         server.stop();
+      }
+   }
+
+   @Test
+   @Timeout(20)
+   public void testCoreTunneledMessageCompressedWhenInflightCompressionEnabled() throws Exception {
+      doTestCoreTunneledMessageCompressionHandlingBasedOnConfiguration(false);
+   }
+
+   @Test
+   @Timeout(20)
+   public void testCoreTunneledMessageNotCompressedWhenInflightCompressionDisabled() throws Exception {
+      doTestCoreTunneledMessageCompressionHandlingBasedOnConfiguration(true);
+   }
+
+   private void doTestCoreTunneledMessageCompressionHandlingBasedOnConfiguration(boolean compress) throws Exception {
+      server.start();
+
+      final String[] receiverOfferedCapabilities;
+      final int messageFormat;
+      final String payload = "A".repeat(1024);
+
+      if (compress) {
+         receiverOfferedCapabilities = new String[] {AmqpSupport.CORE_MESSAGE_TUNNELING_SUPPORT.toString(),
+                                                     AmqpSupport.INFLIGHT_MESSAGE_COMPRESSION_SUPPORT.toString()};
+         messageFormat = AMQP_COMPRESSED_TUNNELED_CORE_MESSAGE_FORMAT;
+      } else {
+         receiverOfferedCapabilities = new String[] {AmqpSupport.CORE_MESSAGE_TUNNELING_SUPPORT.toString()};
+         messageFormat = AMQP_TUNNELED_CORE_MESSAGE_FORMAT;
+      }
+
+      try (ProtonTestClient peer = new ProtonTestClient()) {
+         scriptFederationConnectToRemote(peer, "test");
+         peer.connect("localhost", AMQP_PORT);
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.expectAttach().ofSender().withName("federation-address-receiver")
+                                       .withOfferedCapabilities(FEDERATION_ADDRESS_RECEIVER.toString())
+                                       .withDesiredCapabilities(AmqpSupport.CORE_MESSAGE_TUNNELING_SUPPORT.toString(),
+                                                                AmqpSupport.INFLIGHT_MESSAGE_COMPRESSION_SUPPORT.toString())
+                                       .withSource().withAddress(getTestName());
+
+         // Connect to remote as if an address had demand and matched our federation policy
+         // If inflight message compression is enabled we include the desired capability
+         peer.remoteAttach().ofReceiver()
+                            .withOfferedCapabilities(receiverOfferedCapabilities)
+                            .withDesiredCapabilities(FEDERATION_ADDRESS_RECEIVER.toString())
+                            .withName("federation-address-receiver")
+                            .withSenderSettleModeUnsettled()
+                            .withReceivervSettlesFirst()
+                            .withSource().withDurabilityOfNone()
+                                         .withExpiryPolicyOnLinkDetach()
+                                         .withAddress(getTestName())
+                                         .withCapabilities("topic")
+                                         .and()
+                            .withTarget().and()
+                            .now();
+         peer.remoteFlow().withLinkCredit(10).now();
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+
+         if (compress) {
+            peer.expectTransfer().withMessage().withData(new DataSectionSizeLessThanMatcher(payload.length()))
+                                 .withMessageFormat(messageFormat)
+                                 .and()
+                                 .accept();
+         } else {
+            peer.expectTransfer().withMessageFormat(messageFormat).accept();
+         }
+
+         final ConnectionFactory factory = CFUtil.createConnectionFactory("CORE", "tcp://localhost:" + AMQP_PORT);
+
+         try (Connection connection = factory.createConnection()) {
+            final Session session = connection.createSession(Session.AUTO_ACKNOWLEDGE);
+            final MessageProducer producer = session.createProducer(session.createTopic(getTestName()));
+
+            producer.send(session.createTextMessage(payload));
+
+            peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         }
+
+         peer.expectClose();
+         peer.remoteClose().now();
+
+         peer.waitForScriptToComplete(5, TimeUnit.SECONDS);
+         peer.close();
+
+         server.stop();
+      }
+   }
+
+   private static class DataSectionSizeLessThanMatcher extends TypeSafeMatcher<Binary> {
+
+      private final int maxSize;
+
+      private int actualSize;
+
+      DataSectionSizeLessThanMatcher(int maxSize) {
+         this.maxSize = maxSize;
+      }
+
+      @Override
+      public void describeTo(Description description) {
+         description.appendText("Expected data section with size less than: ")
+                    .appendValue(maxSize)
+                    .appendText(", but got a section with size: ")
+                    .appendValue(actualSize);
+      }
+
+      @Override
+      protected boolean matchesSafely(Binary payload) {
+         if (payload == null || payload.getLength() == 0) {
+            return false; // We expect some size if using this matcher
+         }
+
+         if (payload.getLength() > maxSize) {
+            return false;
+         }
+
+         return true;
       }
    }
 

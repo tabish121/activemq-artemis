@@ -17,9 +17,11 @@
 
 package org.apache.activemq.artemis.protocol.amqp.proton;
 
-import static org.apache.activemq.artemis.protocol.amqp.proton.AMQPArtemisMessageFormats.AMQP_TUNNELED_CORE_LARGE_MESSAGE_FORMAT;
+import static org.apache.activemq.artemis.protocol.amqp.proton.AMQPArtemisMessageFormats.AMQP_COMPRESSED_TUNNELED_CORE_LARGE_MESSAGE_FORMAT;
 
 import java.lang.invoke.MethodHandles;
+import java.nio.ByteBuffer;
+import java.util.zip.Deflater;
 
 import org.apache.activemq.artemis.api.core.ActiveMQException;
 import org.apache.activemq.artemis.core.message.LargeBodyReader;
@@ -49,12 +51,13 @@ import io.netty.buffer.Unpooled;
  * an AMQP Delivery that will be sent across to the remote peer where it can be processed and a Core message recreated
  * for dispatch as if it had been sent from a Core connection.
  */
-public class AMQPTunneledCoreLargeMessageWriter implements MessageWriter {
+public class AMQPTunneledCoreLargeMessageDeflatingWriter implements MessageWriter {
 
    private static final Logger logger = LoggerFactory.getLogger(MethodHandles.lookup().lookupClass());
 
    private static final byte DATA_DESCRIPTOR = 0x75;
    private static final int DATA_SECTION_ENCODING_BYTES = Long.BYTES;
+   private static final int DATA_SECTION_SIZE_OFFSET = 4;
 
    private enum State {
       /**
@@ -82,6 +85,8 @@ public class AMQPTunneledCoreLargeMessageWriter implements MessageWriter {
    private final ProtonServerSenderContext serverSender;
    private final AMQPConnectionContext connection;
    private final Sender protonSender;
+   private final Deflater deflater = new Deflater();
+   private final byte[] scratchBuffer = new byte[1024];
 
    private DeliveryAnnotations annotations;
    private MessageReference reference;
@@ -103,7 +108,7 @@ public class AMQPTunneledCoreLargeMessageWriter implements MessageWriter {
 
    private volatile State state = State.CLOSED;
 
-   public AMQPTunneledCoreLargeMessageWriter(ProtonServerSenderContext serverSender) {
+   public AMQPTunneledCoreLargeMessageDeflatingWriter(ProtonServerSenderContext serverSender) {
       this.serverSender = serverSender;
       this.connection = serverSender.getSessionContext().getAMQPConnectionContext();
       this.protonSender = serverSender.getSender();
@@ -128,7 +133,7 @@ public class AMQPTunneledCoreLargeMessageWriter implements MessageWriter {
    }
 
    @Override
-   public AMQPTunneledCoreLargeMessageWriter open(MessageReference reference) {
+   public AMQPTunneledCoreLargeMessageDeflatingWriter open(MessageReference reference) {
       if (state != State.CLOSED) {
          throw new IllegalStateException("Trying to open an AMQP Large Message writer that was not closed");
       }
@@ -139,6 +144,7 @@ public class AMQPTunneledCoreLargeMessageWriter implements MessageWriter {
    }
 
    private void reset(State newState) {
+      deflater.reset();
       message = null;
       reference = null;
       delivery = null;
@@ -168,7 +174,7 @@ public class AMQPTunneledCoreLargeMessageWriter implements MessageWriter {
       message = (LargeServerMessageImpl) messageReference.getMessage();
       annotations = reference.getProtocolData(DeliveryAnnotations.class);
 
-      delivery = serverSender.createDelivery(messageReference, AMQP_TUNNELED_CORE_LARGE_MESSAGE_FORMAT);
+      delivery = serverSender.createDelivery(messageReference, AMQP_COMPRESSED_TUNNELED_CORE_LARGE_MESSAGE_FORMAT);
       // We will deduct some bytes from the frame for encoding the Transfer payload which could exclude
       // the delivery tag on successive transfers but we aren't sure if that will happen so we assume not.
       frameSize = protonSender.getSession().getConnection().getTransport().getOutboundFrameSizeLimit() - 50 - (delivery.getTag() != null ? delivery.getTag().length : 0);
@@ -183,151 +189,6 @@ public class AMQPTunneledCoreLargeMessageWriter implements MessageWriter {
     */
    private void resume() {
       connection.runNow(this::tryDelivering);
-   }
-
-   private ByteBuf getOrCreateDeliveryAnnotationsBuffer() {
-      if (encodingBuffer == null) {
-         encodingBuffer = Unpooled.buffer();
-
-         final EncoderImpl encoder = TLSEncode.getEncoder();
-
-         try {
-            encoder.setByteBuffer(new NettyWritable(encodingBuffer));
-            encoder.writeObject(annotations);
-         } finally {
-            encoder.setByteBuffer((WritableBuffer) null);
-         }
-      }
-
-      return encodingBuffer;
-   }
-
-   private ByteBuf getOrCreateMessageHeaderBuffer() {
-      if (encodingBuffer == null) {
-         final int headersSize = message.getHeadersAndPropertiesEncodeSize();
-         final int bufferSize = headersSize + DATA_SECTION_ENCODING_BYTES;
-         encodingBuffer = Unpooled.buffer(bufferSize, bufferSize);
-         writeDataSectionTypeInfo(encodingBuffer, headersSize);
-         message.encodeHeadersAndProperties(encodingBuffer);
-      }
-
-      return encodingBuffer;
-   }
-
-   // Will return true when the optional delivery annotations are fully sent or are not present, and false
-   // if not able to send due to a flow control event.
-   private boolean trySendDeliveryAnnotations(ByteBuf frameBuffer, NettyReadable frameView) {
-      for (; protonSender.getLocalState() != EndpointState.CLOSED && state == State.STREAMING_DELIVERY_ANNOTATIONS; ) {
-         if (annotations != null && annotations.getValue() != null && !annotations.getValue().isEmpty()) {
-            if (isFlowControlled(frameBuffer, frameView)) {
-               break;
-            }
-
-            final ByteBuf annotationsBuffer = getOrCreateDeliveryAnnotationsBuffer();
-            final int readSize = Math.min(frameBuffer.writableBytes(), annotationsBuffer.readableBytes());
-
-            annotationsBuffer.readBytes(frameBuffer, readSize);
-
-            // In case the Delivery Annotations encoding exceed the AMQP frame size we
-            // flush and keep sending until done or until flow controlled.
-            if (!frameBuffer.isWritable()) {
-               protonSender.send(frameView);
-               frameBuffer.clear();
-               connection.instantFlush();
-            }
-
-            if (!annotationsBuffer.isReadable()) {
-               encodingBuffer = null;
-               state = State.STREAMING_CORE_HEADERS;
-            }
-         } else {
-            state = State.STREAMING_CORE_HEADERS;
-         }
-      }
-
-      return state == State.STREAMING_CORE_HEADERS;
-   }
-
-   // Will return true when the header was fully sent false if not all the header
-   // data could be sent due to a flow control event.
-   private boolean trySendHeadersAndProperties(ByteBuf frameBuffer, NettyReadable frameView) {
-      for (; protonSender.getLocalState() != EndpointState.CLOSED && state == State.STREAMING_CORE_HEADERS; ) {
-         if (isFlowControlled(frameBuffer, frameView)) {
-            break;
-         }
-
-         final ByteBuf headerBuffer = getOrCreateMessageHeaderBuffer();
-         final int readSize = Math.min(frameBuffer.writableBytes(), headerBuffer.readableBytes());
-
-         headerBuffer.readBytes(frameBuffer, readSize);
-
-         // In case the Core message header and properties exceed the AMQP frame size we
-         // flush and keep sending until done or until flow controlled.
-         if (!frameBuffer.isWritable()) {
-            protonSender.send(frameView);
-            frameBuffer.clear();
-            connection.instantFlush();
-         }
-
-         if (!headerBuffer.isReadable()) {
-            encodingBuffer = null;
-            state = State.STREAMING_BODY;
-         }
-      }
-
-      return state == State.STREAMING_BODY;
-   }
-
-   // Should return true whenever the message contents have been fully written and false otherwise
-   // so that more writes can be attempted after flow control allows it.
-   private boolean tryDeliveryMessageBody(ByteBuf frameBuffer, NettyReadable frameView) throws ActiveMQException {
-      try (LargeBodyReader context = message.getLargeBodyReader()) {
-         context.open();
-         context.position(position);
-
-         final long bodySize = context.getSize();
-
-         for (; protonSender.getLocalState() != EndpointState.CLOSED && state == State.STREAMING_BODY; ) {
-            if (isFlowControlled(frameBuffer, frameView)) {
-               break;
-            }
-
-            if (dataSectionRemaining == 0) {
-               // Cap section at 2GB or the remaining contents of the file if smaller
-               dataSectionRemaining = (int) Math.min(Integer.MAX_VALUE, bodySize - position);
-
-               // Ensure the frame buffer has room for the Data section encoding.
-               if (frameBuffer.writableBytes() < DATA_SECTION_ENCODING_BYTES) {
-                  protonSender.send(frameView);
-                  frameBuffer.clear();
-               }
-
-               writeDataSectionTypeInfo(frameBuffer, dataSectionRemaining);
-            }
-
-            final int readSize = context.readInto(
-               frameBuffer.internalNioBuffer(frameBuffer.writerIndex(), frameBuffer.writableBytes()));
-
-            frameBuffer.writerIndex(frameBuffer.writerIndex() + readSize);
-            position += readSize;
-            dataSectionRemaining -= readSize;
-
-            if (!frameBuffer.isWritable() || position == bodySize) {
-               protonSender.send(frameView);
-               frameBuffer.clear();
-
-               // Only flush on partial writes, the sender will flush on completion so
-               // we avoid excessive flushing in that case.
-               if (position < bodySize) {
-                  connection.instantFlush();
-               } else {
-                  state = State.DONE;
-               }
-            }
-         }
-
-         return state == State.DONE;
-      }
    }
 
    private void tryDelivering() {
@@ -365,12 +226,197 @@ public class AMQPTunneledCoreLargeMessageWriter implements MessageWriter {
       }
    }
 
+   /*
+    * Delivery annotations are written without compression to allow for addition of annotations
+    * specific to the compressed body to follow.
+    */
+   private ByteBuf getOrCreateDeliveryAnnotationsBuffer() {
+      if (encodingBuffer == null) {
+         encodingBuffer = Unpooled.buffer();
+
+         final EncoderImpl encoder = TLSEncode.getEncoder();
+
+         try {
+            encoder.setByteBuffer(new NettyWritable(encodingBuffer));
+            encoder.writeObject(annotations);
+         } finally {
+            encoder.setByteBuffer((WritableBuffer) null);
+         }
+      }
+
+      return encodingBuffer;
+   }
+
+   private ByteBuf getOrCreateMessageHeaderBuffer() {
+      if (encodingBuffer == null) {
+         final int encodedSize = message.getHeadersAndPropertiesEncodeSize();
+         final ByteBuf sourceBuffer = Unpooled.buffer(encodedSize, encodedSize);
+
+         message.encodeHeadersAndProperties(sourceBuffer);
+
+         // Create a space to deflate the encoded header and properties with space for the Data section header
+         encodingBuffer = Unpooled.buffer(DATA_SECTION_ENCODING_BYTES);
+         writeDataSectionTypeInfo(encodingBuffer, 0);
+
+         deflater.setInput(sourceBuffer.nioBuffer());
+         deflater.finish();
+
+         int compressedBytes = 0;
+         int stepResult = 0;
+
+         while (!deflater.finished()) {
+            compressedBytes += stepResult = deflater.deflate(scratchBuffer);
+            encodingBuffer.writeBytes(scratchBuffer, 0, stepResult);
+         }
+
+         deflater.reset();
+
+         // Update the Data section header with the result of the deflate operation
+         encodingBuffer.setInt(DATA_SECTION_SIZE_OFFSET, compressedBytes);
+      }
+
+      return encodingBuffer;
+   }
+
+   // Will return true when the optional delivery annotations are fully sent or are not present, and false
+   // if not able to send due to a flow control event.
+   private boolean trySendDeliveryAnnotations(ByteBuf frameBuffer, NettyReadable frameView) {
+      for (; protonSender.getLocalState() != EndpointState.CLOSED && state == State.STREAMING_DELIVERY_ANNOTATIONS; ) {
+         if (annotations != null && annotations.getValue() != null && !annotations.getValue().isEmpty()) {
+            if (isFlowControlled(frameBuffer, frameView)) {
+               break; // Resume will restart writing the delivery annotations section from where we left off.
+            }
+
+            final ByteBuf annotationsBuffer = getOrCreateDeliveryAnnotationsBuffer();
+            final int readSize = Math.min(frameBuffer.writableBytes(), annotationsBuffer.readableBytes());
+
+            annotationsBuffer.readBytes(frameBuffer, readSize);
+
+            // In case the Delivery Annotations encoding exceed the AMQP frame size we
+            // flush and keep sending until done or until flow controlled.
+            if (!frameBuffer.isWritable()) {
+               protonSender.send(frameView);
+               frameBuffer.clear();
+               connection.instantFlush();
+            }
+
+            if (!annotationsBuffer.isReadable()) {
+               encodingBuffer = null;
+               state = State.STREAMING_CORE_HEADERS;
+            }
+         } else {
+            state = State.STREAMING_CORE_HEADERS;
+         }
+      }
+
+      return state == State.STREAMING_CORE_HEADERS;
+   }
+
+   // Will return true when the header was fully sent false if not all the header
+   // data could be sent due to a flow control event.
+   private boolean trySendHeadersAndProperties(ByteBuf frameBuffer, NettyReadable frameView) {
+      for (; protonSender.getLocalState() != EndpointState.CLOSED && state == State.STREAMING_CORE_HEADERS; ) {
+         if (isFlowControlled(frameBuffer, frameView)) {
+            break; // Resume will restart writing the headers section from where we left off.
+         }
+
+         // TODO: Core headers might not fit into a single frame, what then ?
+
+         final ByteBuf headerBuffer = getOrCreateMessageHeaderBuffer();
+         final int readSize = Math.min(frameBuffer.writableBytes(), headerBuffer.readableBytes());
+
+         headerBuffer.readBytes(frameBuffer, readSize);
+
+         // In case the Core message header and properties exceed the AMQP frame size we
+         // flush and keep sending until done or until flow controlled.
+         if (!frameBuffer.isWritable()) {
+            protonSender.send(frameView);
+            frameBuffer.clear();
+            connection.instantFlush();
+         }
+
+         if (!headerBuffer.isReadable()) {
+            encodingBuffer = null;
+            state = State.STREAMING_BODY;
+         }
+      }
+
+      return state == State.STREAMING_BODY;
+   }
+
+   // Should return true whenever the message contents have been fully written and false otherwise
+   // so that more writes can be attempted after flow control allows it.
+   private boolean tryDeliveryMessageBody(ByteBuf frameBuffer, NettyReadable frameView) throws ActiveMQException {
+      try (LargeBodyReader context = message.getLargeBodyReader()) {
+         context.open();
+         context.position(position);
+
+         final long bodySize = context.getSize();
+         final ByteBuffer readBuffer = ByteBuffer.allocate(frameSize);
+
+         for (; protonSender.getLocalState() != EndpointState.CLOSED && state == State.STREAMING_BODY; ) {
+            if (isFlowControlled(frameBuffer, frameView)) {
+               break; // Resume will restart writing the body from where we left off.
+            }
+
+            if (dataSectionRemaining == 0) {
+               // Cap section at 2GB or the remaining contents of the file if smaller
+               dataSectionRemaining = (int) Math.min(Integer.MAX_VALUE, bodySize - position);
+
+               // Ensure the frame buffer has room for the Data section encoding.
+               if (frameBuffer.writableBytes() < DATA_SECTION_ENCODING_BYTES) {
+                  protonSender.send(frameView);
+                  frameBuffer.clear();
+               }
+
+               writeDataSectionTypeInfo(frameBuffer, dataSectionRemaining);
+            }
+
+            final int readSize = context.readInto(readBuffer);
+
+            position += readSize;
+            dataSectionRemaining -= readSize;
+            deflater.setInput(readBuffer);
+
+            if (dataSectionRemaining == 0) {
+               deflater.finish();
+            }
+
+            int compressedBytes = 0;
+            int stepResult = 0;
+
+            while (!deflater.finished() && !deflater.needsInput()) {
+               final int scratchLimit = Math.min(scratchBuffer.length, frameBuffer.writableBytes());
+
+               compressedBytes += stepResult = deflater.deflate(scratchBuffer, 0, scratchLimit);
+               frameBuffer.writeBytes(scratchBuffer, 0, stepResult);
+            }
+
+            frameBuffer.writerIndex(frameBuffer.writerIndex() + compressedBytes);
+
+            if (!frameBuffer.isWritable() || position == bodySize) {
+               protonSender.send(frameView);
+               frameBuffer.clear();
+
+               // Only flush on partial writes, the sender will flush on completion so
+               // we avoid excessive flushing in that case.
+               if (position < bodySize) {
+                  connection.instantFlush();
+               } else {
+                  state = State.DONE;
+               }
+            }
+         }
+
+         return state == State.DONE;
+      }
+   }
+
    private boolean isFlowControlled(ByteBuf frameBuffer, ReadableBuffer frameView) {
       if (!connection.flowControl(this::resume)) {
          if (frameBuffer.isReadable()) {
-            protonSender.send(frameView); // Store inflight data in the sender
+            protonSender.send(frameView); // Store pending work in the sender for later flush.
          }
-
          return true;
       } else {
          return false;
