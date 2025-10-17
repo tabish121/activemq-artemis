@@ -771,7 +771,7 @@ public class AMQPFederationServerToServerTest extends AmqpClientTestSupport {
 
          producerR.send(message);
 
-         final Message received = consumerL.receive(500_000);
+         final Message received = consumerL.receive(5_000);
          assertNotNull(received);
          assertInstanceOf(BytesMessage.class, received);
 
@@ -2081,6 +2081,188 @@ public class AMQPFederationServerToServerTest extends AmqpClientTestSupport {
 
          Wait.assertTrue(() -> server.bindingQuery(addressName, false).getQueueNames().size() == 0, 10_000, 50);
          Wait.assertTrue(() -> remoteServer.bindingQuery(addressName, false).getQueueNames().size() == 0, 10_000, 50);
+      }
+   }
+
+   @Test
+   @Timeout(20)
+   public void testQueueDemandOnLocalBrokerFederatesNonLargeMessagesFromRemoteAMQPWithCompression() throws Exception {
+      testQueueDemandOnLocalBrokerFederatesNonLargeMessagesFromRemoteWithCompression("AMQP");
+   }
+
+   @Test
+   @Timeout(20)
+   public void testQueueDemandOnLocalBrokerFederatesNonLargeMessagesFromRemoteCOREWithTunnelingWithCompression() throws Exception {
+      testQueueDemandOnLocalBrokerFederatesNonLargeMessagesFromRemoteWithCompression("CORE");
+   }
+
+   private void testQueueDemandOnLocalBrokerFederatesNonLargeMessagesFromRemoteWithCompression(String clientProtocol) throws Exception {
+      logger.info("Test started: {}", getTestName());
+
+      // TODO Create body with Random to allow runs to vary the compression that occurs on the payload.
+
+      final AMQPFederationQueuePolicyElement localQueuePolicy = new AMQPFederationQueuePolicyElement();
+      localQueuePolicy.setName("test-policy");
+      localQueuePolicy.addToIncludes("test", "test");
+      localQueuePolicy.addProperty(AmqpSupport.TUNNEL_CORE_MESSAGES, Boolean.toString(true));
+      localQueuePolicy.addProperty(AmqpSupport.COMPRESS_INFLIGHT_MESSAGES, Boolean.toString(true));
+
+      final AMQPFederatedBrokerConnectionElement element = new AMQPFederatedBrokerConnectionElement();
+      element.setName(getTestName());
+      element.addLocalQueuePolicy(localQueuePolicy);
+
+      final AMQPBrokerConnectConfiguration amqpConnection =
+         new AMQPBrokerConnectConfiguration(getTestName(), "tcp://localhost:" + SERVER_PORT_REMOTE);
+      amqpConnection.setReconnectAttempts(10);// Limit reconnects
+      amqpConnection.addElement(element);
+
+      server.getConfiguration().addAMQPConnection(amqpConnection);
+      remoteServer.start();
+      remoteServer.createQueue(QueueConfiguration.of("test").setRoutingType(RoutingType.ANYCAST)
+                                                             .setAddress("test")
+                                                             .setAutoCreated(false));
+      server.start();
+
+      final ConnectionFactory factoryLocal = CFUtil.createConnectionFactory(clientProtocol, "tcp://localhost:" + SERVER_PORT);
+      final ConnectionFactory factoryRemote;
+
+      if (clientProtocol.equals("CORE")) {
+         factoryRemote = CFUtil.createConnectionFactory(
+            clientProtocol, "tcp://localhost:" + SERVER_PORT_REMOTE + "?minLargeMessageSize=" + MIN_LARGE_MESSAGE_SIZE);
+      } else {
+         factoryRemote = CFUtil.createConnectionFactory(clientProtocol, "tcp://localhost:" + SERVER_PORT_REMOTE);
+      }
+
+      try (Connection connectionL = factoryLocal.createConnection();
+           Connection connectionR = factoryRemote.createConnection()) {
+
+         final Session sessionL = connectionL.createSession(Session.AUTO_ACKNOWLEDGE);
+         final Session sessionR = connectionR.createSession(Session.AUTO_ACKNOWLEDGE);
+
+         final Queue queue = sessionL.createQueue("test");
+
+         final MessageConsumer consumerL = sessionL.createConsumer(queue);
+
+         connectionL.start();
+         connectionR.start();
+
+         // Demand on local address should trigger receiver on remote.
+         Wait.assertTrue(() -> server.queueQuery(SimpleString.of("test")).isExists());
+         Wait.assertTrue(() -> remoteServer.queueQuery(SimpleString.of("test")).isExists());
+
+         final MessageProducer producerR = sessionR.createProducer(queue);
+         final BytesMessage message = sessionR.createBytesMessage();
+         final byte[] bodyBytes = new byte[MIN_LARGE_MESSAGE_SIZE / 2];
+
+         Arrays.fill(bodyBytes, (byte)1);
+
+         message.writeBytes(bodyBytes);
+         message.setStringProperty("testProperty", "testValue");
+
+         producerR.send(message);
+
+         final Message received = consumerL.receive(5_000);
+         assertNotNull(received);
+         assertInstanceOf(BytesMessage.class, received);
+
+         final byte[] receivedBytes = new byte[bodyBytes.length];
+         final BytesMessage receivedBytesMsg = (BytesMessage) received;
+         receivedBytesMsg.readBytes(receivedBytes);
+
+         assertArrayEquals(bodyBytes, receivedBytes);
+         assertTrue(message.propertyExists("testProperty"));
+         assertEquals("testValue", received.getStringProperty("testProperty"));
+      }
+   }
+
+   @Test
+   @Timeout(20)
+   public void testQueueDemandOnLocalBrokerFederatesLargeMessagesFromRemoteAMQPWithCompression() throws Exception {
+      testQueueDemandOnLocalBrokerFederatesLargeMessagesFromRemoteWithCompression("AMQP");
+   }
+
+   @Test
+   @Timeout(20)
+   public void testQueueDemandOnLocalBrokerFederatesLargeMessagesFromRemoteCOREWithTunnelingWithCompression() throws Exception {
+      testQueueDemandOnLocalBrokerFederatesLargeMessagesFromRemoteWithCompression("CORE");
+   }
+
+   private void testQueueDemandOnLocalBrokerFederatesLargeMessagesFromRemoteWithCompression(String clientProtocol) throws Exception {
+      logger.info("Test started: {}", getTestName());
+
+      // TODO Create body with Random to allow runs to vary the compression that occurs on the payload.
+
+      final AMQPFederationQueuePolicyElement localQueuePolicy = new AMQPFederationQueuePolicyElement();
+      localQueuePolicy.setName("test-policy");
+      localQueuePolicy.addToIncludes("test", "test");
+      localQueuePolicy.addProperty(AmqpSupport.TUNNEL_CORE_MESSAGES, Boolean.toString(true));
+      localQueuePolicy.addProperty(AmqpSupport.COMPRESS_INFLIGHT_MESSAGES, Boolean.toString(true));
+
+      final AMQPFederatedBrokerConnectionElement element = new AMQPFederatedBrokerConnectionElement();
+      element.setName(getTestName());
+      element.addLocalQueuePolicy(localQueuePolicy);
+
+      final AMQPBrokerConnectConfiguration amqpConnection =
+         new AMQPBrokerConnectConfiguration(getTestName(), "tcp://localhost:" + SERVER_PORT_REMOTE);
+      amqpConnection.setReconnectAttempts(10);// Limit reconnects
+      amqpConnection.addElement(element);
+
+      server.getConfiguration().addAMQPConnection(amqpConnection);
+      remoteServer.start();
+      remoteServer.createQueue(QueueConfiguration.of("test").setRoutingType(RoutingType.ANYCAST)
+                                                             .setAddress("test")
+                                                             .setAutoCreated(false));
+      server.start();
+
+      final ConnectionFactory factoryLocal = CFUtil.createConnectionFactory(clientProtocol, "tcp://localhost:" + SERVER_PORT);
+      final ConnectionFactory factoryRemote;
+
+      if (clientProtocol.equals("CORE")) {
+         factoryRemote = CFUtil.createConnectionFactory(
+            clientProtocol, "tcp://localhost:" + SERVER_PORT_REMOTE + "?minLargeMessageSize=" + MIN_LARGE_MESSAGE_SIZE);
+      } else {
+         factoryRemote = CFUtil.createConnectionFactory(clientProtocol, "tcp://localhost:" + SERVER_PORT_REMOTE);
+      }
+
+      try (Connection connectionL = factoryLocal.createConnection();
+           Connection connectionR = factoryRemote.createConnection()) {
+
+         final Session sessionL = connectionL.createSession(Session.AUTO_ACKNOWLEDGE);
+         final Session sessionR = connectionR.createSession(Session.AUTO_ACKNOWLEDGE);
+
+         final Queue queue = sessionL.createQueue("test");
+
+         final MessageConsumer consumerL = sessionL.createConsumer(queue);
+
+         connectionL.start();
+         connectionR.start();
+
+         // Demand on local address should trigger receiver on remote.
+         Wait.assertTrue(() -> server.queueQuery(SimpleString.of("test")).isExists());
+         Wait.assertTrue(() -> remoteServer.queueQuery(SimpleString.of("test")).isExists());
+
+         final MessageProducer producerR = sessionR.createProducer(queue);
+         final BytesMessage message = sessionR.createBytesMessage();
+         final byte[] bodyBytes = new byte[(int)(MIN_LARGE_MESSAGE_SIZE * 1.5)];
+
+         Arrays.fill(bodyBytes, (byte)1);
+
+         message.writeBytes(bodyBytes);
+         message.setStringProperty("testProperty", "testValue");
+
+         producerR.send(message);
+
+         final Message received = consumerL.receive(5_000);
+         assertNotNull(received);
+         assertInstanceOf(BytesMessage.class, received);
+
+         final byte[] receivedBytes = new byte[bodyBytes.length];
+         final BytesMessage receivedBytesMsg = (BytesMessage) received;
+         receivedBytesMsg.readBytes(receivedBytes);
+
+         assertArrayEquals(bodyBytes, receivedBytes);
+         assertTrue(message.propertyExists("testProperty"));
+         assertEquals("testValue", received.getStringProperty("testProperty"));
       }
    }
 }
