@@ -177,7 +177,6 @@ public class AmqpMessageRoutingTest extends JMSClientTestSupport {
       }
    }
 
-
    @Test
    @Timeout(60)
    public void testAMQPRouteMessageToJMSOpenWire() throws Throwable {
@@ -219,7 +218,6 @@ public class AmqpMessageRoutingTest extends JMSClientTestSupport {
 
          assertNull(queueConsumer.receiveNoWait());
 
-
          sendMessages(addressA, 1, RoutingType.ANYCAST);
 
          Message queueMessage = queueConsumer.receive(1000);
@@ -227,7 +225,6 @@ public class AmqpMessageRoutingTest extends JMSClientTestSupport {
          assertEquals(addressA, ((javax.jms.Queue) queueMessage.getJMSDestination()).getQueueName());
 
          assertNull(topicConsumer.receiveNoWait());
-
 
          sendMessages(addressA, 1, null);
          Message queueMessage2 = queueConsumer.receive(1000);
@@ -237,7 +234,6 @@ public class AmqpMessageRoutingTest extends JMSClientTestSupport {
          Message topicMessage2 = topicConsumer.receive(1000);
          assertNotNull(topicMessage2);
          assertEquals(addressA, ((javax.jms.Topic) topicMessage2.getJMSDestination()).getTopicName());
-
       } finally {
          connection.close();
       }

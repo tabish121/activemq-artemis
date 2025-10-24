@@ -1976,12 +1976,24 @@ public class ServerSessionImpl extends CriticalComponentImpl implements ServerSe
 
    @Override
    public synchronized RoutingStatus send(Transaction tx,
-                                          Message messageParameter,
+                                          Message msg,
                                           final boolean direct,
                                           final String senderName,
                                           boolean noAutoCreateQueue,
                                           RoutingContext routingContext) throws Exception {
-      final Message message = LargeServerMessageImpl.checkLargeMessage(messageParameter, storageManager);
+      return send(tx, msg.getAddressSimpleString(), msg.getRoutingType(), msg, direct, senderName, noAutoCreateQueue, routingContext);
+   }
+
+   @Override
+   public synchronized RoutingStatus send(Transaction tx,
+                                          SimpleString address,
+                                          RoutingType routingType,
+                                          Message msg,
+                                          final boolean direct,
+                                          final String senderName,
+                                          boolean noAutoCreateQueue,
+                                          RoutingContext routingContext) throws Exception {
+      final Message message = LargeServerMessageImpl.checkLargeMessage(msg, storageManager);
 
       if (server.hasBrokerMessagePlugins()) {
          server.callBrokerMessagePlugins(plugin -> plugin.beforeSend(this, tx, message, direct, noAutoCreateQueue));
@@ -2006,8 +2018,6 @@ public class ServerSessionImpl extends CriticalComponentImpl implements ServerSe
             message.setMessageID(id);
          }
 
-         SimpleString address = message.getAddressSimpleString();
-
          if (defaultAddress == null && address != null) {
             defaultAddress = address;
          }
@@ -2015,6 +2025,9 @@ public class ServerSessionImpl extends CriticalComponentImpl implements ServerSe
          if (address == null) {
             // We don't want to force a re-encode when the message gets sent to the consumer
             message.setAddress(defaultAddress);
+         } else {
+            // We need to carry forward the chosen address from the caller to the later send stages.
+            message.setAddress(address);
          }
 
          if (logger.isTraceEnabled()) {
@@ -2032,7 +2045,7 @@ public class ServerSessionImpl extends CriticalComponentImpl implements ServerSe
             result = handleManagementMessage(tx, message, direct);
          } else {
             try {
-               result = doSend(tx, message, address, direct, senderName, noAutoCreateQueue, routingContext);
+               result = doSend(tx, routingType, message, address, direct, senderName, noAutoCreateQueue, routingContext);
             } catch (ActiveMQIOErrorException e) {
                if (tx != null) {
                   tx.markAsRollbackOnly(e);
@@ -2387,7 +2400,6 @@ public class ServerSessionImpl extends CriticalComponentImpl implements ServerSe
       return doSend(tx, msg, originalAddress, direct, senderName, noAutoCreateQueue, routingContext);
    }
 
-
    @Override
    public synchronized RoutingStatus doSend(final Transaction tx,
                                             final Message msg,
@@ -2396,10 +2408,20 @@ public class ServerSessionImpl extends CriticalComponentImpl implements ServerSe
                                             final String senderName,
                                             final boolean noAutoCreateQueue,
                                             final RoutingContext routingContext) throws Exception {
+      return doSend(tx, msg.getRoutingType(), msg, originalAddress, direct, senderName, noAutoCreateQueue, routingContext);
+   }
+
+   @Override
+   public synchronized RoutingStatus doSend(final Transaction tx,
+                                            final RoutingType routingType,
+                                            final Message message,
+                                            final SimpleString originalAddress,
+                                            final boolean direct,
+                                            final String senderName,
+                                            final boolean noAutoCreateQueue,
+                                            final RoutingContext routingContext) throws Exception {
 
       RoutingStatus result = RoutingStatus.OK;
-
-      RoutingType routingType = msg.getRoutingType();
 
          /* TODO-now: How to address here with AMQP?
          if (originalAddress != null) {
@@ -2410,16 +2432,19 @@ public class ServerSessionImpl extends CriticalComponentImpl implements ServerSe
             }
          } */
 
-      final AddressInfo targetFromMessage = new AddressInfo(msg.getAddressSimpleString(), routingType);
-      AddressInfo art = getAddressAndRoutingType(targetFromMessage);
+      final AddressInfo targetFromMessage = new AddressInfo(message.getAddressSimpleString(), routingType);
+      final AddressInfo art = getAddressAndRoutingType(targetFromMessage);
+
       if (art != targetFromMessage) {
          // remove the prefix from the message, with the address model change, only non prefixed addresses exist on the broker
-         msg.setAddress(art.getName());
+         message.setAddress(art.getName());
       }
+
+      final SimpleString messageAddress = message.getAddressSimpleString();
 
       // check the user has write access to this address (and potentially queue).
       try {
-         securityCheck(CompositeAddress.extractAddressName(msg.getAddressSimpleString()), CompositeAddress.isFullyQualified(msg.getAddressSimpleString()) ? CompositeAddress.extractQueueName(msg.getAddressSimpleString()) : null, CheckType.SEND, this);
+         securityCheck(CompositeAddress.extractAddressName(messageAddress), CompositeAddress.isFullyQualified(messageAddress) ? CompositeAddress.extractQueueName(messageAddress) : null, CheckType.SEND, this);
       } catch (ActiveMQException e) {
          if (!autoCommitSends && tx != null) {
             tx.markAsRollbackOnly(e);
@@ -2428,16 +2453,16 @@ public class ServerSessionImpl extends CriticalComponentImpl implements ServerSe
       }
 
       if (server.getConfiguration().isPopulateValidatedUser() && validatedUser != null) {
-         msg.setValidatedUserID(validatedUser);
+         message.setValidatedUserID(validatedUser);
       }
 
-      if (server.getConfiguration().isRejectEmptyValidatedUser() && msg.getValidatedUserID() == null) {
+      if (server.getConfiguration().isRejectEmptyValidatedUser() && message.getValidatedUserID() == null) {
          throw ActiveMQMessageBundle.BUNDLE.rejectEmptyValidatedUser();
       }
 
-      if (server.getAddressSettingsRepository().getMatch(msg.getAddress()).isEnableIngressTimestamp()) {
-         msg.setIngressTimestamp();
-         msg.reencode();
+      if (server.getAddressSettingsRepository().getMatch(message.getAddress()).isEnableIngressTimestamp()) {
+         message.setIngressTimestamp();
+         message.reencode();
       }
 
       if (tx == null || autoCommitSends) {
@@ -2452,13 +2477,13 @@ public class ServerSessionImpl extends CriticalComponentImpl implements ServerSe
 
          // Retrieve message size for metrics update before routing,
          // since large message backing files may be closed once routing completes
-         int mSize = msg instanceof LargeServerMessageImpl lsmi ? lsmi.getBodyBufferSize() : msg.getEncodeSize();
+         int mSize = message instanceof LargeServerMessageImpl lsmi ? lsmi.getBodyBufferSize() : message.getEncodeSize();
 
-         result = postOffice.route(msg, routingContext, direct);
+         result = postOffice.route(message, routingContext, direct);
 
-         logger.debug("Routing result for {} = {}", msg, result);
+         logger.debug("Routing result for {} = {}", message, result);
 
-         updateProducerMetrics(msg, senderName, mSize);
+         updateProducerMetrics(message, senderName, mSize);
       } finally {
          if (!routingContext.isReusable()) {
             routingContext.clear();
